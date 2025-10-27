@@ -1,8 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- PumoCommon - Pump Abstract -->
+    <!-- PumpCommon - Pump Abstract -->
     <string name="pump_operation_not_supported_by_pump_driver">Operacja nie jest wspierana przez pompę i/lub sterownik pompy.</string>
-    <string name="bolus_delivered_so_far">podano %1$.2f U / %2$.2f U</string>
     <!-- PumpCommon - Pump Status -->
     <string name="pump_status_not_initialized">Nie zainicjowany</string>
     <string name="pump_status_initialized">Zainicjalizowany</string>
@@ -38,7 +37,6 @@
     <string name="time_last_month">Ostatni miesiąc</string>
     <!-- BLE Config -->
     <string name="ble_config_button_scan_start">Skanuj</string>
-    <string name="ble_config_scan_stop">Stop</string>
     <string name="ble_config_scan_selected">Wybrany</string>
     <string name="ble_config_scan_scanning">Skanowanie</string>
     <string name="ble_config_scan_finished">Skanowanie zakończono</string>
