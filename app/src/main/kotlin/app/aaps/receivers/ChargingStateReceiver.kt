@@ -4,26 +4,25 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import androidx.annotation.VisibleForTesting
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.receivers.ReceiverStatusStore
-import app.aaps.core.interfaces.rx.bus.RxBus
-import app.aaps.core.interfaces.rx.events.EventChargingState
+import app.aaps.core.interfaces.receivers.ReceiverStatusStore.ChargingStatus
 import dagger.android.DaggerBroadcastReceiver
 import javax.inject.Inject
 
 class ChargingStateReceiver : DaggerBroadcastReceiver() {
 
     @Inject lateinit var aapsLogger: AAPSLogger
-    @Inject lateinit var rxBus: RxBus
     @Inject lateinit var receiverStatusStore: ReceiverStatusStore
 
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
-        rxBus.send(grabChargingState(context))
-        //aapsLogger.debug(LTag.CORE, receiverStatusStore.lastChargingEvent?.toString() ?: "Unknown charging state")
+        grabChargingState(context)
     }
 
-    private fun grabChargingState(context: Context): EventChargingState {
+    @VisibleForTesting
+    fun grabChargingState(context: Context): ChargingStatus {
         val batteryStatus = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
 
         // Level
@@ -40,6 +39,6 @@ class ChargingStateReceiver : DaggerBroadcastReceiver() {
                 plugged == BatteryManager.BATTERY_PLUGGED_WIRELESS ||
                 plugged == BatteryManager.BATTERY_PLUGGED_DOCK
 
-        return EventChargingState(isCharging, batteryLevel).also { receiverStatusStore.lastChargingEvent = it }
+        return ChargingStatus(isCharging, batteryLevel).also { receiverStatusStore.setChargingStatus(it) }
     }
 }

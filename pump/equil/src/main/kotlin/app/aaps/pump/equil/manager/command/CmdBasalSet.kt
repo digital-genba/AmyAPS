@@ -4,12 +4,12 @@ import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.profile.Profile
 import app.aaps.core.keys.interfaces.Preferences
+import app.aaps.core.utils.notifyAll
 import app.aaps.pump.equil.database.EquilHistoryRecord
 import app.aaps.pump.equil.driver.definition.BasalSchedule
 import app.aaps.pump.equil.keys.EquilBooleanKey
 import app.aaps.pump.equil.manager.EquilManager
 import app.aaps.pump.equil.manager.Utils
-import java.util.ArrayList
 
 class CmdBasalSet(
     var basalSchedule: BasalSchedule,
@@ -22,7 +22,7 @@ class CmdBasalSet(
     override fun getFirstData(): ByteArray {
         val indexByte = Utils.intToBytes(pumpReqIndex)
         val data2 = byteArrayOf(0x01, 0x02)
-        val list: MutableList<Byte?> = ArrayList<Byte?>()
+        val list: MutableList<Byte?> = ArrayList()
         var i = 0
         for (basalScheduleEntry in basalSchedule.getEntries()) {
             val rate = basalScheduleEntry.rate
@@ -56,12 +56,12 @@ class CmdBasalSet(
     override fun decodeConfirmData(data: ByteArray) {
         synchronized(this) {
             preferences.put(EquilBooleanKey.BasalSet, true)
-            cmdStatus = true
-            (this as Object).notifyAll()
+            cmdSuccess = true
+            notifyAll()
         }
     }
 
-    override fun getEventType(): EquilHistoryRecord.EventType? {
+    override fun getEventType(): EquilHistoryRecord.EventType {
         return EquilHistoryRecord.EventType.SET_BASAL_PROFILE
     }
 }

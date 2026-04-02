@@ -1,6 +1,7 @@
 package app.aaps.pump.danars.comm
 
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
+import app.aaps.core.interfaces.pump.BlePreCheck
 import app.aaps.core.interfaces.pump.DetailedBolusInfo
 import app.aaps.core.interfaces.pump.DetailedBolusInfoStorage
 import app.aaps.core.interfaces.pump.PumpSync
@@ -14,7 +15,8 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.ArgumentMatchers
 import org.mockito.Mock
-import org.mockito.Mockito.`when`
+import org.mockito.kotlin.anyOrNull
+import org.mockito.kotlin.whenever
 
 class DanaRsPacketNotifyDeliveryRateDisplayTest : DanaRSTestBase() {
 
@@ -24,14 +26,15 @@ class DanaRsPacketNotifyDeliveryRateDisplayTest : DanaRSTestBase() {
     @Mock lateinit var detailedBolusInfoStorage: DetailedBolusInfoStorage
     @Mock lateinit var temporaryBasalStorage: TemporaryBasalStorage
     @Mock lateinit var pumpSync: PumpSync
+    @Mock lateinit var blePreCheck: BlePreCheck
 
     private lateinit var danaRSPlugin: DanaRSPlugin
 
     @Test
     fun runTest() {
-        `when`(rh.gs(ArgumentMatchers.anyInt(), anyObject())).thenReturn("SomeString")
+        whenever(rh.gs(ArgumentMatchers.anyInt(), anyOrNull())).thenReturn("SomeString")
         danaPump.bolusingDetailedBolusInfo = DetailedBolusInfo().apply { insulin = 1.0 }
-        val packet = DanaRSPacketNotifyDeliveryRateDisplay(aapsLogger, rh, rxBus, danaPump)
+        val packet = DanaRSPacketNotifyDeliveryRateDisplay(aapsLogger, ch, rxBus, danaPump)
         // test params
         Assertions.assertEquals(0, packet.getRequestParams().size)
         // test message decoding
@@ -48,8 +51,8 @@ class DanaRsPacketNotifyDeliveryRateDisplayTest : DanaRSTestBase() {
     fun mock() {
         danaRSPlugin =
             DanaRSPlugin(
-                aapsLogger, rh, preferences, commandQueue, aapsSchedulers, rxBus, context, constraintChecker, profileFunction, danaPump, pumpSync,
-                detailedBolusInfoStorage, temporaryBasalStorage, fabricPrivacy, dateUtil, uiInteraction, danaHistoryDatabase, decimalFormatter, pumpEnactResultProvider
+                aapsLogger, rh, preferences, commandQueue, aapsSchedulers, rxBus, context, constraintChecker, danaPump, pumpSync,
+                detailedBolusInfoStorage, temporaryBasalStorage, fabricPrivacy, dateUtil, notificationManager, danaHistoryDatabase, decimalFormatter, pumpEnactResultProvider, blePreCheck
             )
         danaPump.bolusingDetailedBolusInfo = DetailedBolusInfo()
     }

@@ -1,6 +1,7 @@
 package app.aaps.core.interfaces.queue
 
 import android.text.Spanned
+import app.aaps.core.interfaces.profile.EffectiveProfile
 import app.aaps.core.interfaces.profile.Profile
 import app.aaps.core.interfaces.pump.DetailedBolusInfo
 import app.aaps.core.interfaces.pump.PumpSync
@@ -15,7 +16,6 @@ interface CommandQueue {
     fun size(): Int
     fun performing(): Command?
     fun resetPerforming()
-    fun independentConnect(reason: String, callback: Callback?)
     fun bolusInQueue(): Boolean
     fun bolus(detailedBolusInfo: DetailedBolusInfo, callback: Callback?): Boolean
     fun cancelAllBoluses(id: Long?)
@@ -40,5 +40,5 @@ interface CommandQueue {
     fun isCustomCommandRunning(customCommandType: Class<out CustomCommand>): Boolean
     fun isCustomCommandInQueue(customCommandType: Class<out CustomCommand>): Boolean
     fun spannedStatus(): Spanned
-    fun isThisProfileSet(requestedProfile: Profile): Boolean
+    fun isThisProfileSet(requestedProfile: EffectiveProfile): Boolean
 }

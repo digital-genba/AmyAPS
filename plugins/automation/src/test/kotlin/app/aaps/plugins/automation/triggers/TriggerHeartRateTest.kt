@@ -4,11 +4,12 @@ import app.aaps.core.data.model.HR
 import app.aaps.plugins.automation.R
 import app.aaps.plugins.automation.elements.Comparator
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
 import org.junit.jupiter.api.Test
-import org.mockito.Mockito.verify
-import org.mockito.Mockito.verifyNoMoreInteractions
-import org.mockito.Mockito.`when`
+import org.mockito.kotlin.verify
+import org.mockito.kotlin.verifyNoMoreInteractions
+import org.mockito.kotlin.whenever
 import org.skyscreamer.jsonassert.JSONAssert
 
 class TriggerHeartRateTest : TriggerTestBase() {
@@ -21,8 +22,8 @@ class TriggerHeartRateTest : TriggerTestBase() {
     @Test
     fun friendlyDescription() {
         val t = TriggerHeartRate(injector)
-        `when`(rh.gs(Comparator.Compare.IS_EQUAL_OR_GREATER.stringRes)).thenReturn(">")
-        `when`(rh.gs(R.string.triggerHeartRateDesc, ">", 80.0)).thenReturn("test")
+        whenever(rh.gs(Comparator.Compare.IS_EQUAL_OR_GREATER.stringRes)).thenReturn(">")
+        whenever(rh.gs(R.string.triggerHeartRateDesc, ">", 80.0)).thenReturn("test")
         assertThat(t.friendlyDescription()).isEqualTo("test")
     }
 
@@ -40,26 +41,26 @@ class TriggerHeartRateTest : TriggerTestBase() {
     }
 
     @Test
-    fun shouldRunNotAvailable() {
+    fun shouldRunNotAvailable() = runTest {
         val t = TriggerHeartRate(injector).apply { comparator.value = Comparator.Compare.IS_NOT_AVAILABLE }
         assertThat(t.shouldRun()).isTrue()
         verifyNoMoreInteractions(persistenceLayer)
     }
 
     @Test
-    fun shouldRunNoHeartRate() {
+    fun shouldRunNoHeartRate() = runTest {
         val t = TriggerHeartRate(injector).apply {
             heartRate.value = 100.0
             comparator.value = Comparator.Compare.IS_GREATER
         }
-        `when`(persistenceLayer.getHeartRatesFromTime(now - t.averageHeartRateDurationMillis)).thenReturn(emptyList())
+        whenever(persistenceLayer.getHeartRatesFromTime(now - t.averageHeartRateDurationMillis)).thenReturn(emptyList())
         assertThat(t.shouldRun()).isFalse()
         verify(persistenceLayer).getHeartRatesFromTime(now - t.averageHeartRateDurationMillis)
         verifyNoMoreInteractions(persistenceLayer)
     }
 
     @Test
-    fun shouldRunBelowThreshold() {
+    fun shouldRunBelowThreshold() = runTest {
         val t = TriggerHeartRate(injector).apply {
             heartRate.value = 100.0
             comparator.value = Comparator.Compare.IS_GREATER
@@ -68,14 +69,14 @@ class TriggerHeartRateTest : TriggerTestBase() {
             HR(duration = 300_000, timestamp = now - 300_000, beatsPerMinute = 80.0, device = "test"),
             HR(duration = 300_000, timestamp = now, beatsPerMinute = 60.0, device = "test"),
         )
-        `when`(persistenceLayer.getHeartRatesFromTime(now - t.averageHeartRateDurationMillis)).thenReturn(hrs)
+        whenever(persistenceLayer.getHeartRatesFromTime(now - t.averageHeartRateDurationMillis)).thenReturn(hrs)
         assertThat(t.shouldRun()).isFalse()
         verify(persistenceLayer).getHeartRatesFromTime(now - t.averageHeartRateDurationMillis)
         verifyNoMoreInteractions(persistenceLayer)
     }
 
     @Test
-    fun shouldRunTrigger() {
+    fun shouldRunTrigger() = runTest {
         val t = TriggerHeartRate(injector).apply {
             heartRate.value = 100.0
             comparator.value = Comparator.Compare.IS_GREATER
@@ -83,7 +84,7 @@ class TriggerHeartRateTest : TriggerTestBase() {
         val hrs = listOf(
             HR(duration = 300_000, timestamp = now, beatsPerMinute = 120.0, device = "test"),
         )
-        `when`(persistenceLayer.getHeartRatesFromTime(now - t.averageHeartRateDurationMillis)).thenReturn(hrs)
+        whenever(persistenceLayer.getHeartRatesFromTime(now - t.averageHeartRateDurationMillis)).thenReturn(hrs)
         assertThat(t.shouldRun()).isTrue()
         verify(persistenceLayer).getHeartRatesFromTime(now - t.averageHeartRateDurationMillis)
         verifyNoMoreInteractions(persistenceLayer)

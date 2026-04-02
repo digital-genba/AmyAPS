@@ -1,15 +1,16 @@
 package app.aaps.pump.danar
 
-import android.bluetooth.BluetoothSocket
 import android.os.SystemClock
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
+import app.aaps.core.interfaces.pump.rfcomm.RfcommSocket
 import app.aaps.core.utils.notifyAll
 import app.aaps.core.utils.waitMillis
 import app.aaps.pump.dana.DanaPump
 import app.aaps.pump.danar.comm.MessageBase
 import app.aaps.pump.danar.comm.MessageHashTableBase
 import app.aaps.pump.utils.CRC
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import kotlin.math.max
@@ -19,7 +20,7 @@ import kotlin.math.max
  */
 class SerialIOThread(
     private val aapsLogger: AAPSLogger,
-    private val rfCommSocket: BluetoothSocket,
+    private val rfCommSocket: RfcommSocket,
     private val hashTable: MessageHashTableBase,
     private val danaPump: DanaPump
 ) : Thread() {
@@ -40,7 +41,16 @@ class SerialIOThread(
                 val availableBytes = mInputStream.available()
                 // Ask for 1024 byte (or more if available)
                 val newData = ByteArray(max(1024, availableBytes))
-                val gotBytes = mInputStream.read(newData)
+                val gotBytes = try {
+                    mInputStream.read(newData)
+                } catch (e: IOException) {
+                    aapsLogger.error(LTag.PUMPBTCOMM, "Read IOException, breaking loop: ${e.message}")
+                    break
+                }
+                if (gotBytes < 0) {
+                    aapsLogger.error(LTag.PUMPBTCOMM, "Read returned $gotBytes (EOF), breaking loop")
+                    break
+                }
                 // When we are here there is some new data available
                 appendToBuffer(newData, gotBytes)
 
@@ -64,9 +74,10 @@ class SerialIOThread(
                 }
             }
         } catch (e: Exception) {
-            if (e.message?.contains("bt socket closed") == true) aapsLogger.error("Thread exception: ", e)
+            aapsLogger.error(LTag.PUMPBTCOMM, "Reader thread exception: ${e.javaClass.simpleName}: ${e.message}")
             mKeepRunning = false
         }
+        aapsLogger.debug(LTag.PUMPBTCOMM, "Reader loop exited. mKeepRunning=$mKeepRunning")
         disconnect("EndOfLoop")
     }
 

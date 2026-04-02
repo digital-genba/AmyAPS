@@ -11,15 +11,14 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
-import androidx.databinding.DataBindingUtil
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.resources.ResourceHelper
+import app.aaps.core.interfaces.ui.UiInteraction
 import app.aaps.core.ui.activities.TranslatedDaggerAppCompatActivity
-import app.aaps.core.ui.dialogs.OKDialog
 import app.aaps.core.ui.toast.ToastUtils
 import info.nightscout.comboctl.base.BasicProgressStage
 import info.nightscout.comboctl.base.PAIRING_PIN_SIZE
@@ -39,7 +38,8 @@ import javax.inject.Inject
 private class BluetoothPermissionChecks(
     private val activity: ComponentActivity,
     private val permissions: List<String>,
-    private val aapsLogger: AAPSLogger
+    private val aapsLogger: AAPSLogger,
+    private val uiInteraction: UiInteraction
 ) {
 
     private val activityResultLauncher: ActivityResultLauncher<Array<String>>
@@ -79,10 +79,13 @@ class ComboV2PairingActivity : TranslatedDaggerAppCompatActivity() {
     @Inject lateinit var aapsLogger: AAPSLogger
     @Inject lateinit var rh: ResourceHelper
     @Inject lateinit var combov2Plugin: ComboV2Plugin
+    @Inject lateinit var uiInteraction: UiInteraction
 
     private var uiInitialized = false
     private var unregisterActivityLauncher = {}
     private var bluetoothPermissionChecks: BluetoothPermissionChecks? = null
+    private lateinit var binding: Combov2PairingActivityBinding
+    private var pinTextWatcher: TextWatcher? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -110,9 +113,8 @@ class ComboV2PairingActivity : TranslatedDaggerAppCompatActivity() {
             startPairingActivityLauncher.unregister()
         }
 
-        val binding: Combov2PairingActivityBinding = DataBindingUtil.setContentView(
-            this, R.layout.combov2_pairing_activity
-        )
+        binding = Combov2PairingActivityBinding.inflate(layoutInflater)
+        setContentView(binding.root)
 
         title = rh.gs(R.string.combov2_pair_with_pump_title)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
@@ -138,7 +140,8 @@ class ComboV2PairingActivity : TranslatedDaggerAppCompatActivity() {
                         Manifest.permission.BLUETOOTH_SCAN,
                         Manifest.permission.BLUETOOTH_CONNECT
                     ),
-                    aapsLogger
+                    aapsLogger,
+                    uiInteraction
                 )
             }
 
@@ -200,6 +203,17 @@ class ComboV2PairingActivity : TranslatedDaggerAppCompatActivity() {
     }
 
     override fun onDestroy() {
+        // Clear all listeners to prevent memory leaks
+        if (::binding.isInitialized) {
+            binding.combov2CannotPairGoBack.setOnClickListener(null)
+            binding.combov2PairingFinishedOk.setOnClickListener(null)
+            binding.combov2PairingAborted.setOnClickListener(null)
+            pinTextWatcher?.let { binding.combov2PinEntryEdit.removeTextChangedListener(it) }
+            binding.combov2EnterPin.setOnClickListener(null)
+            binding.combov2StartPairing.setOnClickListener(null)
+            binding.combov2CancelPairing.setOnClickListener(null)
+        }
+
         // In the NotInitialized state, getPairingProgressFlow() crashes because there
         // is no PumpManager present. But in that state, the pairing progress flow needs
         // no reset because no pairing can happen in that state anyway.
@@ -249,7 +263,7 @@ class ComboV2PairingActivity : TranslatedDaggerAppCompatActivity() {
         // same format it is shown on the Combo LCD, which is:
         //
         //     xxx xxx xxxx
-        binding.combov2PinEntryEdit.addTextChangedListener(object : TextWatcher {
+        pinTextWatcher = object : TextWatcher {
             var previousText = ""
 
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
@@ -336,7 +350,8 @@ class ComboV2PairingActivity : TranslatedDaggerAppCompatActivity() {
                     binding.combov2PinEntryEdit.addTextChangedListener(this)
                 }
             }
-        })
+        }
+        binding.combov2PinEntryEdit.addTextChangedListener(pinTextWatcher)
 
         binding.combov2EnterPin.setOnClickListener {
             // We need to skip whitespaces since the
@@ -357,9 +372,13 @@ class ComboV2PairingActivity : TranslatedDaggerAppCompatActivity() {
         }
 
         binding.combov2CancelPairing.setOnClickListener {
-            OKDialog.showConfirmation(this, "Confirm pairing cancellation", "Do you really want to cancel pairing?", ok = Runnable {
-                combov2Plugin.cancelPairing()
-            })
+            uiInteraction.showOkCancelDialog(
+                context = this,
+                title = "Confirm pairing cancellation",
+                message = "Do you really want to cancel pairing?",
+                ok = {
+                    combov2Plugin.cancelPairing()
+                })
         }
 
         combov2Plugin.getPairingProgressFlow()

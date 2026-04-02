@@ -5,8 +5,6 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.AnimationDrawable
-import android.os.Handler
-import android.os.Looper
 import android.view.LayoutInflater
 import android.view.View
 import android.widget.LinearLayout
@@ -20,8 +18,8 @@ import app.aaps.core.data.ue.Sources
 import app.aaps.core.data.ue.ValueWithUnit
 import app.aaps.core.interfaces.aps.APS
 import app.aaps.core.interfaces.aps.Sensitivity
+import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.configuration.ConfigBuilder
-import app.aaps.core.interfaces.insulin.Insulin
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.logging.UserEntryLogger
@@ -29,14 +27,12 @@ import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.plugin.PluginBase
 import app.aaps.core.interfaces.plugin.PluginBaseWithPreferences
 import app.aaps.core.interfaces.plugin.PluginDescription
-import app.aaps.core.interfaces.profile.ProfileSource
 import app.aaps.core.interfaces.protection.ProtectionCheck
 import app.aaps.core.interfaces.pump.Pump
 import app.aaps.core.interfaces.pump.PumpSync
 import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.rx.bus.RxBus
 import app.aaps.core.interfaces.rx.events.EventAppExit
-import app.aaps.core.interfaces.rx.events.EventAppInitialized
 import app.aaps.core.interfaces.rx.events.EventConfigBuilderChange
 import app.aaps.core.interfaces.rx.events.EventRebuildTabs
 import app.aaps.core.interfaces.smoothing.Smoothing
@@ -44,7 +40,6 @@ import app.aaps.core.interfaces.source.BgSource
 import app.aaps.core.interfaces.sync.NsClient
 import app.aaps.core.interfaces.ui.UiInteraction
 import app.aaps.core.keys.interfaces.Preferences
-import app.aaps.core.ui.dialogs.OKDialog
 import app.aaps.core.ui.extensions.scanForActivity
 import app.aaps.core.ui.extensions.toVisibility
 import app.aaps.plugins.configuration.R
@@ -72,7 +67,8 @@ class ConfigBuilderPlugin @Inject constructor(
     private val pumpSync: PumpSync,
     private val protectionCheck: ProtectionCheck,
     private val uiInteraction: UiInteraction,
-    private val context: Context
+    private val context: Context,
+    private val config: Config
 ) : PluginBaseWithPreferences(
     pluginDescription = PluginDescription()
         .mainType(PluginType.GENERAL)
@@ -87,13 +83,10 @@ class ConfigBuilderPlugin @Inject constructor(
 ), ConfigBuilder {
 
     private val scope = CoroutineScope(Dispatchers.Default + Job())
-    private var expandAnimation: AnimationDrawable? = null
 
     override fun initialize() {
         loadSettings()
         setAlwaysEnabledPluginsEnabled()
-        // Wait for MainActivity start
-        Handler(Looper.getMainLooper()).postDelayed({ rxBus.send(EventAppInitialized()) }, 5000)
     }
 
     private fun setAlwaysEnabledPluginsEnabled() {
@@ -159,13 +152,11 @@ class ConfigBuilderPlugin @Inject constructor(
                 LTag.CONFIGBUILDER, p.name + ":" +
                     (if (p.isEnabled(PluginType.GENERAL)) " GENERAL" else "") +
                     (if (p.isEnabled(PluginType.SENSITIVITY)) " SENSITIVITY" else "") +
-                    (if (p.isEnabled(PluginType.PROFILE)) " PROFILE" else "") +
                     (if (p.isEnabled(PluginType.APS)) " APS" else "") +
                     (if (p.isEnabled(PluginType.PUMP)) " PUMP" else "") +
                     (if (p.isEnabled(PluginType.CONSTRAINTS)) " CONSTRAINTS" else "") +
                     (if (p.isEnabled(PluginType.LOOP)) " LOOP" else "") +
                     (if (p.isEnabled(PluginType.BGSOURCE)) " BGSOURCE" else "") +
-                    (if (p.isEnabled(PluginType.INSULIN)) " INSULIN" else "") +
                     (if (p.isEnabled(PluginType.SYNC)) " SYNC" else "") +
                     if (p.isEnabled(PluginType.SMOOTHING)) " SMOOTHING" else ""
             )
@@ -188,7 +179,7 @@ class ConfigBuilderPlugin @Inject constructor(
             performPluginSwitch(changedPlugin, newState, type)
             pumpSync.connectNewPump()
         } else {
-            OKDialog.showConfirmation(activity, rh.gs(R.string.allow_hardware_pump_text), {
+            uiInteraction.showOkCancelDialog(context = activity, message = rh.gs(R.string.allow_hardware_pump_text), ok = {
                 performPluginSwitch(changedPlugin, newState, type)
                 pumpSync.connectNewPump()
                 preferences.put(ConfigurationBooleanKey.AllowHardwarePump, true)
@@ -199,27 +190,70 @@ class ConfigBuilderPlugin @Inject constructor(
                     value = ValueWithUnit.SimpleString(rh.gsNotLocalised(changedPlugin.pluginDescription.pluginName))
                 )
                 aapsLogger.debug(LTag.PUMP, "First time HW pump allowed!")
-            }, {
-                                          rxBus.send(EventConfigBuilderUpdateGui())
-                                          aapsLogger.debug(LTag.PUMP, "User does not allow switching to HW pump!")
-                                      })
+            }, cancel = {
+                rxBus.send(EventConfigBuilderUpdateGui())
+                aapsLogger.debug(LTag.PUMP, "User does not allow switching to HW pump!")
+            })
         }
     }
 
-    override fun performPluginSwitch(changedPlugin: PluginBase, enabled: Boolean, type: PluginType) {
-        if (enabled && !changedPlugin.isEnabled()) {
-            scope.launch {
-                uel.log(
-                    Action.PLUGIN_ENABLED, Sources.ConfigBuilder, rh.gs(changedPlugin.pluginDescription.pluginName),
-                    ValueWithUnit.SimpleString(rh.gsNotLocalised(changedPlugin.pluginDescription.pluginName))
-                )
+    override fun requestPluginSwitch(plugin: PluginBase, enabled: Boolean, type: PluginType): String? {
+        return when {
+            plugin.getType() == PluginType.PUMP && plugin.name != rh.gs(app.aaps.core.ui.R.string.virtual_pump) -> {
+                val allowHardwarePump = preferences.get(ConfigurationBooleanKey.AllowHardwarePump)
+                if (allowHardwarePump) {
+                    performPluginSwitch(plugin, enabled, type)
+                    pumpSync.connectNewPump()
+                    null
+                } else {
+                    rh.gs(R.string.allow_hardware_pump_text)
+                }
             }
-        } else if (!enabled) {
-            scope.launch {
-                uel.log(
-                    Action.PLUGIN_DISABLED, Sources.ConfigBuilder, rh.gs(changedPlugin.pluginDescription.pluginName),
-                    ValueWithUnit.SimpleString(rh.gsNotLocalised(changedPlugin.pluginDescription.pluginName))
-                )
+
+            plugin.getType() == PluginType.PUMP                                                                 -> {
+                performPluginSwitch(plugin, enabled, type)
+                pumpSync.connectNewPump()
+                null
+            }
+
+            else                                                                                                -> {
+                performPluginSwitch(plugin, enabled, type)
+                null
+            }
+        }
+    }
+
+    override fun confirmPumpPluginSwitch(plugin: PluginBase, enabled: Boolean, type: PluginType) {
+        performPluginSwitch(plugin, enabled, type)
+        pumpSync.connectNewPump()
+        preferences.put(ConfigurationBooleanKey.AllowHardwarePump, true)
+        scope.launch {
+            uel.log(
+                action = Action.HW_PUMP_ALLOWED,
+                source = Sources.ConfigBuilder,
+                note = rh.gs(plugin.pluginDescription.pluginName),
+                value = ValueWithUnit.SimpleString(rh.gsNotLocalised(plugin.pluginDescription.pluginName))
+            )
+        }
+        aapsLogger.debug(LTag.PUMP, "First time HW pump allowed!")
+    }
+
+    override fun performPluginSwitch(changedPlugin: PluginBase, enabled: Boolean, type: PluginType) {
+        if (!config.AAPSCLIENT) {
+            if (enabled && !changedPlugin.isEnabled()) {
+                scope.launch {
+                    uel.log(
+                        Action.PLUGIN_ENABLED, Sources.ConfigBuilder, null,
+                        ValueWithUnit.SimpleString(rh.gsNotLocalised(changedPlugin.pluginDescription.pluginName))
+                    )
+                }
+            } else if (!enabled) {
+                scope.launch {
+                    uel.log(
+                        Action.PLUGIN_DISABLED, Sources.ConfigBuilder, null,
+                        ValueWithUnit.SimpleString(rh.gsNotLocalised(changedPlugin.pluginDescription.pluginName))
+                    )
+                }
             }
         }
         changedPlugin.setPluginEnabled(type, enabled)
@@ -235,11 +269,9 @@ class ConfigBuilderPlugin @Inject constructor(
     override fun processOnEnabledCategoryChanged(changedPlugin: PluginBase, type: PluginType) {
         var pluginsInCategory: ArrayList<PluginBase>? = null
         when {
-            type == PluginType.INSULIN     -> pluginsInCategory = activePlugin.getSpecificPluginsListByInterface(Insulin::class.java)
             type == PluginType.SENSITIVITY -> pluginsInCategory = activePlugin.getSpecificPluginsListByInterface(Sensitivity::class.java)
             type == PluginType.SMOOTHING   -> pluginsInCategory = activePlugin.getSpecificPluginsListByInterface(Smoothing::class.java)
             type == PluginType.APS         -> pluginsInCategory = activePlugin.getSpecificPluginsListByInterface(APS::class.java)
-            type == PluginType.PROFILE     -> pluginsInCategory = activePlugin.getSpecificPluginsListByInterface(ProfileSource::class.java)
             type == PluginType.BGSOURCE    -> pluginsInCategory = activePlugin.getSpecificPluginsListByInterface(BgSource::class.java)
             type == PluginType.PUMP        -> pluginsInCategory = activePlugin.getSpecificPluginsListByInterface(Pump::class.java)
             // Process only NSClients
@@ -290,11 +322,11 @@ class ConfigBuilderPlugin @Inject constructor(
         }
         layout.categoryVisibility.visibility = preferences.simpleMode.not().toVisibility()
         layout.categoryDescription.text = rh.gs(description)
-        expandAnimation = layout.categoryExpandMore.background as AnimationDrawable?
-        expandAnimation?.setEnterFadeDuration(200)
-        expandAnimation?.setExitFadeDuration(200)
-        if (expandAnimation?.isRunning == false)
-            expandAnimation?.start()
+        (layout.categoryExpandMore.background as AnimationDrawable).let { expandAnimation ->
+            expandAnimation.setEnterFadeDuration(200)
+            expandAnimation.setExitFadeDuration(200)
+            if (!expandAnimation.isRunning) expandAnimation.start()
+        }
         layout.categoryExpandLess.setOnClickListener {
             layout.categoryExpandLess.visibility = false.toVisibility()
             layout.categoryExpandMore.visibility = (plugins.size > 1).toVisibility()

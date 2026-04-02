@@ -5,6 +5,8 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.HandlerThread
+import androidx.annotation.VisibleForTesting
+import androidx.core.net.toUri
 import app.aaps.core.data.configuration.Constants
 import app.aaps.core.data.model.GV
 import app.aaps.core.data.model.GlucoseUnit
@@ -13,6 +15,7 @@ import app.aaps.core.data.model.TrendArrow
 import app.aaps.core.data.plugin.PluginType
 import app.aaps.core.data.time.T
 import app.aaps.core.data.ue.Sources
+import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
@@ -22,8 +25,11 @@ import app.aaps.core.interfaces.source.BgSource
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.fabric.FabricPrivacy
 import app.aaps.core.keys.interfaces.Preferences
+import app.aaps.core.ui.compose.icons.IcPluginIntelligo
+import app.aaps.plugins.source.compose.BgSourceComposeContent
 import app.aaps.plugins.source.keys.IntelligoLongKey
 import io.reactivex.rxjava3.disposables.CompositeDisposable
+import kotlinx.coroutines.runBlocking
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,28 +38,37 @@ class IntelligoPlugin @Inject constructor(
     resourceHelper: ResourceHelper,
     aapsLogger: AAPSLogger,
     preferences: Preferences,
+    config: Config,
     private val context: Context,
     private val persistenceLayer: PersistenceLayer,
     private val dateUtil: DateUtil,
-    private val fabricPrivacy: FabricPrivacy
+    private val fabricPrivacy: FabricPrivacy,
 ) : AbstractBgSourcePlugin(
     pluginDescription = PluginDescription()
         .mainType(PluginType.BGSOURCE)
-        .fragmentClass(BGSourceFragment::class.java.name)
+        .composeContent { plugin ->
+            BgSourceComposeContent(
+                title = resourceHelper.gs(R.string.intelligo)
+            )
+        }
         .pluginIcon(app.aaps.core.ui.R.drawable.ic_intelligo)
+        .icon(IcPluginIntelligo)
         .preferencesId(PluginDescription.PREFERENCE_SCREEN)
         .pluginName(R.string.intelligo)
         .shortName(R.string.intelligo)
         .preferencesVisibleInSimpleMode(false)
         .description(R.string.description_source_intelligo),
     ownPreferences = listOf(IntelligoLongKey::class.java),
-    aapsLogger, resourceHelper, preferences
+    aapsLogger, resourceHelper, preferences, config
 ), BgSource {
 
-    private var handler: Handler? = null
-    private var refreshLoop: Runnable
+    @VisibleForTesting
+    var handler: Handler? = null
 
-    private val contentUri: Uri = Uri.parse("content://$AUTHORITY/$TABLE_NAME")
+    @VisibleForTesting
+    var refreshLoop: Runnable
+
+    private val contentUri: Uri = "content://$AUTHORITY/$TABLE_NAME".toUri()
 
     init {
         refreshLoop = Runnable {
@@ -79,13 +94,15 @@ class IntelligoPlugin @Inject constructor(
 
     override fun onStop() {
         super.onStop()
-        handler?.removeCallbacks(refreshLoop)
+        handler?.removeCallbacksAndMessages(null)
+        handler?.looper?.quit()
         handler = null
         disposable.clear()
     }
 
     @SuppressLint("CheckResult")
-    private fun handleNewData() {
+    @VisibleForTesting
+    fun handleNewData() {
         if (!isEnabled()) return
 
         context.contentResolver.query(contentUri, null, null, null, null)?.let { cr ->
@@ -139,8 +156,7 @@ class IntelligoPlugin @Inject constructor(
             cr.close()
 
             if (glucoseValues.isNotEmpty() || calibrations.isNotEmpty())
-                persistenceLayer.insertCgmSourceData(Sources.Intelligo, glucoseValues, calibrations, null)
-                    .blockingGet()
+                runBlocking { persistenceLayer.insertCgmSourceData(Sources.Intelligo, glucoseValues, calibrations, null) }
         }
     }
 

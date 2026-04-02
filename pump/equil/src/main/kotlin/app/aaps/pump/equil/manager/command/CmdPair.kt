@@ -1,16 +1,15 @@
 package app.aaps.pump.equil.manager.command
 
-import android.util.Log
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.keys.interfaces.Preferences
+import app.aaps.core.utils.notifyAll
 import app.aaps.pump.equil.database.EquilHistoryRecord
 import app.aaps.pump.equil.keys.EquilStringKey
 import app.aaps.pump.equil.manager.AESUtil
 import app.aaps.pump.equil.manager.EquilManager
 import app.aaps.pump.equil.manager.EquilResponse
 import app.aaps.pump.equil.manager.Utils
-import java.lang.Exception
 import java.nio.ByteBuffer
 import java.security.MessageDigest
 
@@ -31,7 +30,7 @@ class CmdPair(
         port = "0E0E"
         sn = name.replace("Equil - ", "").trim { it <= ' ' }
         sn = convertString(sn!!)
-        Log.e(LTag.PUMPCOMM.toString(), "sn===$sn")
+        aapsLogger.debug(LTag.PUMPCOMM, "sn===$sn")
     }
 
     override fun getEquilResponse(): EquilResponse? {
@@ -115,21 +114,21 @@ class CmdPair(
         val equilCmdModel = decodeModel()
         val keyBytes = randomPassword ?: return null
         val content = AESUtil.decrypt(equilCmdModel, keyBytes)
-        val pwd1 = content.substring(0, 64)
+        val pwd1 = content.take(64)
         val pwd2 = content.substring(64)
         aapsLogger.debug(LTag.PUMPCOMM, "decrypted====$pwd1")
         aapsLogger.debug(LTag.PUMPCOMM, "decrypted====$pwd2")
         if (ERROR_PWD == pwd1 && ERROR_PWD == pwd2) {
             synchronized(this) {
-                cmdStatus = true
+                cmdSuccess = true
                 enacted = false
-                (this as Object).notifyAll()
+                notifyAll()
             }
             return null
         }
 
         preferences.put(EquilStringKey.Password, pwd2)
-        preferences.put(EquilStringKey.Devices, pwd1)
+        preferences.put(EquilStringKey.Device, pwd1)
         runPwd = pwd2
         val data1 = Utils.hexStringToBytes(pwd1)
         val data = Utils.concat(data1, keyBytes)
@@ -140,13 +139,13 @@ class CmdPair(
 
     override fun decodeConfirm(): EquilResponse? {
         synchronized(this) {
-            cmdStatus = true
-            (this as Object).notifyAll()
+            cmdSuccess = true
+            notifyAll()
         }
         return null
     }
 
-    override fun getEventType(): EquilHistoryRecord.EventType? = EquilHistoryRecord.EventType.INITIALIZE_EQUIL
+    override fun getEventType(): EquilHistoryRecord.EventType = EquilHistoryRecord.EventType.INITIALIZE_EQUIL
 
     companion object {
 

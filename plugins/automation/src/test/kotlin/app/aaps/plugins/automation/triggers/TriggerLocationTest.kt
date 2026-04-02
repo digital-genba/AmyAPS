@@ -4,19 +4,20 @@ import android.location.Location
 import app.aaps.plugins.automation.R
 import app.aaps.plugins.automation.elements.InputLocationMode
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.test.runTest
 import org.json.JSONException
 import org.json.JSONObject
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.mockito.Mockito.`when`
+import org.mockito.kotlin.whenever
 
 class TriggerLocationTest : TriggerTestBase() {
 
     @BeforeEach fun mock() {
-        `when`(locationDataContainer.lastLocation).thenReturn(mockedLocation())
+        whenever(locationDataContainer.lastLocation).thenReturn(mockedLocation())
     }
 
-    @Test fun copyConstructorTest() {
+    @Test fun copyConstructorTest() = runTest {
         val t = TriggerLocation(injector)
         t.latitude.setValue(213.0)
         t.longitude.setValue(212.0)
@@ -29,15 +30,15 @@ class TriggerLocationTest : TriggerTestBase() {
         assertThat(t1.modeSelected.value).isEqualTo(InputLocationMode.Mode.INSIDE)
     }
 
-    @Test fun shouldRunTest() {
+    @Test fun shouldRunTest() = runTest {
         var t = TriggerLocation(injector)
         t.latitude.setValue(213.0)
         t.longitude.setValue(212.0)
         t.distance.setValue(2.0)
         //        t.modeSelected.setValue(InputLocationMode.Mode.OUTSIDE);
-        `when`(locationDataContainer.lastLocation).thenReturn(null)
+        whenever(locationDataContainer.lastLocation).thenReturn(null)
         assertThat(t.shouldRun()).isFalse()
-        `when`(locationDataContainer.lastLocation).thenReturn(mockedLocation())
+        whenever(locationDataContainer.lastLocation).thenReturn(mockedLocation())
         assertThat(t.shouldRun()).isTrue()
         t = TriggerLocation(injector)
         t.distance.setValue(-500.0)
@@ -47,8 +48,8 @@ class TriggerLocationTest : TriggerTestBase() {
         t = TriggerLocation(injector)
         t.distance.setValue(50.0)
         t.lastMode = t.currentMode(55.0)
-        `when`(locationDataContainer.lastLocation).thenReturn(null)
-        `when`(locationDataContainer.lastLocation).thenReturn(mockedLocationOut())
+        whenever(locationDataContainer.lastLocation).thenReturn(null)
+        whenever(locationDataContainer.lastLocation).thenReturn(mockedLocationOut())
         t.modeSelected.value = InputLocationMode.Mode.GOING_IN
         assertThat(InputLocationMode.Mode.OUTSIDE).isEqualTo(t.lastMode)
         assertThat(InputLocationMode.Mode.INSIDE).isEqualTo(t.currentMode(5.0))
@@ -59,7 +60,7 @@ class TriggerLocationTest : TriggerTestBase() {
     }
 
     private var locationJson = "{\"data\":{\"mode\":\"OUTSIDE\",\"distance\":2,\"latitude\":213,\"name\":\"\",\"longitude\":212},\"type\":\"TriggerLocation\"}"
-    @Test fun toJSONTest() {
+    @Test fun toJSONTest() = runTest {
         val t = TriggerLocation(injector)
         t.latitude.setValue(213.0)
         t.longitude.setValue(212.0)
@@ -82,15 +83,15 @@ class TriggerLocationTest : TriggerTestBase() {
         assertThat(t2.modeSelected.value).isEqualTo(t.modeSelected.value)
     }
 
-    @Test fun friendlyNameTest() {
+    @Test fun friendlyNameTest() = runTest {
         assertThat(TriggerLocation(injector).friendlyName()).isEqualTo(R.string.location)
     }
 
-    @Test fun friendlyDescriptionTest() {
-        assertThat(TriggerLocation(injector).friendlyDescription()).isNull() //not mocked    }
+    @Test fun friendlyDescriptionTest() = runTest {
+        assertThat(TriggerLocation(injector).friendlyDescription()).isNull() //not mocked
     }
 
-    @Test fun iconTest() {
+    @Test fun iconTest() = runTest {
         assertThat(TriggerLocation(injector).icon().get()).isEqualTo(R.drawable.ic_location_on)
     }
 

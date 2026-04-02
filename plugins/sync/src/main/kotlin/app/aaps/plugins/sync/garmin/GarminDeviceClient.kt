@@ -9,6 +9,7 @@ import android.content.ServiceConnection
 import android.os.IBinder
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
+import app.aaps.core.utils.notifyAll
 import app.aaps.core.utils.waitMillis
 import com.garmin.android.apps.connectmobile.connectiq.IConnectIQService
 import com.garmin.android.connectiq.ConnectIQ.IQMessageStatus
@@ -43,7 +44,7 @@ class GarminDeviceClient(
             }
         }
     }
-    private var bindLock = Object()
+    private var bindLock = Any()
     private var ciqService: IConnectIQService? = null
         get() {
             synchronized(bindLock) {
@@ -130,6 +131,7 @@ class GarminDeviceClient(
 
     override fun isDisposed() = state == State.DISPOSED
     override fun dispose() {
+        executor.shutdown()
         broadcastReceiver.forEach { context.unregisterReceiver(it) }
         broadcastReceiver.clear()
         registeredActions.clear()
@@ -225,8 +227,8 @@ class GarminDeviceClient(
     @Suppress("Deprecation")
     private fun getDevice(intent: Intent): Long? {
         val rawDevice = intent.extras?.get(EXTRA_REMOTE_DEVICE)
-        return if (rawDevice is Long) rawDevice else (rawDevice as IQDevice?)?.deviceIdentifier
-            ?: return null
+        return rawDevice as? Long ?: ((rawDevice as IQDevice?)?.deviceIdentifier
+            ?: return null)
     }
 
     private class Message(
@@ -235,7 +237,7 @@ class GarminDeviceClient(
     ) {
 
         var attempt: Int = 0
-        val creation = Instant.now()
+        val creation: Instant = Instant.now()
         var lastAttempt: Instant? = null
         val iqApp get() = IQApp(app.id, app.name, 0)
         val iqDevice get() = app.device.toIQDevice()

@@ -1,6 +1,7 @@
 package app.aaps.receivers
 
 import android.content.Context
+import androidx.annotation.VisibleForTesting
 import androidx.work.Data
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
@@ -17,6 +18,7 @@ import app.aaps.core.interfaces.alerts.LocalAlertUtils
 import app.aaps.core.interfaces.aps.Loop
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.db.PersistenceLayer
+import app.aaps.core.interfaces.insulin.ConcentrationHelper
 import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
@@ -26,7 +28,7 @@ import app.aaps.core.interfaces.queue.Command
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.rx.bus.RxBus
-import app.aaps.core.interfaces.rx.events.EventProfileSwitchChanged
+import app.aaps.core.interfaces.rx.events.EventProfileChangeRequested
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.fabric.FabricPrivacy
 import app.aaps.core.keys.LongNonKey
@@ -34,6 +36,7 @@ import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.objects.profile.ProfileSealed
 import app.aaps.core.objects.workflow.LoggingWorker
 import app.aaps.plugins.configuration.maintenance.MaintenancePlugin
+import app.aaps.plugins.constraints.dstHelper.DstHelperPlugin
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.Dispatchers
 import java.util.concurrent.TimeUnit
@@ -41,7 +44,7 @@ import javax.inject.Inject
 import kotlin.math.abs
 
 class KeepAliveWorker(
-    private val context: Context,
+    context: Context,
     params: WorkerParameters
 ) : LoggingWorker(context, params, Dispatchers.Default) {
 
@@ -58,6 +61,9 @@ class KeepAliveWorker(
     @Inject lateinit var maintenancePlugin: MaintenancePlugin
     @Inject lateinit var rh: ResourceHelper
     @Inject lateinit var preferences: Preferences
+    @Inject lateinit var dstHelperPlugin: DstHelperPlugin
+    @Inject lateinit var workManager: WorkManager
+    @Inject lateinit var ch: ConcentrationHelper
 
     companion object {
 
@@ -98,7 +104,7 @@ class KeepAliveWorker(
 
         // 15 min interval is WorkManager minimum so schedule another instances to have 5 min interval
         if (inputData.getString("schedule") == KA_0) {
-            WorkManager.getInstance(context).enqueueUniqueWork(
+            workManager.enqueueUniqueWork(
                 KA_5,
                 ExistingWorkPolicy.REPLACE,
                 OneTimeWorkRequest.Builder(KeepAliveWorker::class.java)
@@ -106,7 +112,7 @@ class KeepAliveWorker(
                     .setInitialDelay(5, TimeUnit.MINUTES)
                     .build()
             )
-            WorkManager.getInstance(context).enqueueUniqueWork(
+            workManager.enqueueUniqueWork(
                 KA_10,
                 ExistingWorkPolicy.REPLACE,
                 OneTimeWorkRequest.Builder(KeepAliveWorker::class.java)
@@ -116,7 +122,7 @@ class KeepAliveWorker(
             )
         } else {
             // Sometimes schedule +5min, +10min gets broken
-            // If this happen do nothing
+            // If this happens do nothing
             // It's causing false Pump unreachable alerts
             if (lastRun + T.mins(4).msecs() > dateUtil.now()) return Result.success(workDataOf("Error" to "Schedule broken. Ignoring"))
         }
@@ -127,6 +133,7 @@ class KeepAliveWorker(
         }
         lastRun = dateUtil.now()
 
+        dstHelperPlugin.dstCheck()
         localAlertUtils.shortenSnoozeInterval()
         localAlertUtils.checkStaleBGAlert()
         checkPump()
@@ -140,7 +147,7 @@ class KeepAliveWorker(
 
     // Perform history data cleanup every day
     // Keep 6 months
-    private fun databaseCleanup() {
+    private suspend fun databaseCleanup() {
         val lastRun = preferences.get(LongNonKey.LastCleanupRun)
         if (lastRun < dateUtil.now() - T.days(1).msecs()) {
             val result = persistenceLayer.cleanupDatabase(6 * 31, deleteTrackedChanges = false)
@@ -156,10 +163,10 @@ class KeepAliveWorker(
             .fromStates(listOf(WorkInfo.State.FAILED, WorkInfo.State.SUCCEEDED))
             .build()
 
-        val workInfo: ListenableFuture<List<WorkInfo>> = WorkManager.getInstance(context).getWorkInfos(workQuery)
+        val workInfo: ListenableFuture<List<WorkInfo>> = workManager.getWorkInfos(workQuery)
         aapsLogger.debug(LTag.CORE, "WorkManager size is ${workInfo.get().size}")
         if (workInfo.get().size > 1000) {
-            WorkManager.getInstance(context).pruneWork()
+            workManager.pruneWork()
             aapsLogger.debug(LTag.CORE, "WorkManager pruning ....")
         }
     }
@@ -167,7 +174,8 @@ class KeepAliveWorker(
     // Usually deviceStatus is uploaded through LoopPlugin after every loop cycle.
     // if there is no BG available, we have to upload anyway to have correct
     // IOB displayed in NS
-    private fun checkAPS() {
+    @VisibleForTesting
+    fun checkAPS() {
         var shouldUploadStatus = false
         if (config.AAPSCLIENT) return
         if (config.PUMPCONTROL) shouldUploadStatus = true
@@ -179,15 +187,16 @@ class KeepAliveWorker(
         }
     }
 
-    private fun checkPump() {
+    @VisibleForTesting
+    suspend fun checkPump() {
         val pump = activePlugin.activePump
         val ps = profileFunction.getRequestedProfile() ?: return
         val requestedProfile = ProfileSealed.PS(ps, activePlugin)
         val runningProfile = profileFunction.getProfile()
-        val lastConnection = pump.lastDataTime()
+        val lastConnection = pump.lastDataTime.value
         val now = dateUtil.now()
         val isStatusOutdated = lastConnection + STATUS_UPDATE_FREQUENCY < now
-        val isBasalOutdated = abs(requestedProfile.getBasal() - pump.baseBasalRate) > pump.pumpDescription.basalStep
+        val isBasalOutdated = abs(requestedProfile.getBasal() - ch.fromPump(pump.baseBasalRate)) > pump.pumpDescription.basalStep
         aapsLogger.debug(LTag.CORE, "Last connection: " + dateUtil.dateAndTimeString(lastConnection))
         // Sometimes it can happen that keepalive is not triggered every 5 minutes as it should.
         // In some cases, it may not even have been started at all.
@@ -205,11 +214,17 @@ class KeepAliveWorker(
         }
         if (loop.runningMode == RM.Mode.DISCONNECTED_PUMP) {
             // do nothing if pump is disconnected
-        } else if (runningProfile == null || ((!pump.isThisProfileSet(requestedProfile) || !requestedProfile.isEqual(runningProfile)
-                || (runningProfile is ProfileSealed.EPS && runningProfile.value.originalEnd < dateUtil.now() && runningProfile.value.originalDuration != 0L))
-                && !commandQueue.isRunning(Command.CommandType.BASAL_PROFILE))
+        } else if (
+            runningProfile == null ||
+            (
+                (!pump.isThisProfileSet(requestedProfile) ||
+                    !requestedProfile.isEqual(runningProfile) ||
+                    (runningProfile is ProfileSealed.EPS && runningProfile.value.originalEnd < dateUtil.now() && runningProfile.value.originalDuration != 0L)
+                    )
+                    && !commandQueue.isRunning(Command.CommandType.BASAL_PROFILE)
+                )
         ) {
-            rxBus.send(EventProfileSwitchChanged())
+            rxBus.send(EventProfileChangeRequested())
         } else if (isStatusOutdated && !pump.isBusy()) {
             lastReadStatus = now
             commandQueue.readStatus(rh.gs(app.aaps.core.ui.R.string.keepalive_status_outdated), null)

@@ -1,8 +1,6 @@
 package app.aaps.core.validators.di
 
 import app.aaps.core.validators.DefaultEditTextValidator
-import app.aaps.core.validators.EditTextValidator
-import app.aaps.core.validators.ValidatingEditTextPreference
 import app.aaps.core.validators.preferences.AdaptiveClickPreference
 import app.aaps.core.validators.preferences.AdaptiveDoublePreference
 import app.aaps.core.validators.preferences.AdaptiveIntPreference
@@ -14,14 +12,15 @@ import app.aaps.core.validators.preferences.AdaptiveSwitchPreference
 import app.aaps.core.validators.preferences.AdaptiveUnitPreference
 import dagger.Module
 import dagger.android.ContributesAndroidInjector
+import dagger.hilt.InstallIn
+import dagger.hilt.components.SingletonComponent
 
 @Module
+@InstallIn(SingletonComponent::class)
 @Suppress("unused")
 abstract class ValidatorsModule {
 
     @ContributesAndroidInjector abstract fun defaultEditTextValidatorInjector(): DefaultEditTextValidator
-    @ContributesAndroidInjector abstract fun editTextValidatorInjector(): EditTextValidator
-    @ContributesAndroidInjector abstract fun validatingEditTextPreferenceInjector(): ValidatingEditTextPreference
     @ContributesAndroidInjector abstract fun adaptiveUnitPreferenceInjector(): AdaptiveUnitPreference
     @ContributesAndroidInjector abstract fun adaptiveIntPreferenceInjector(): AdaptiveIntPreference
     @ContributesAndroidInjector abstract fun adaptiveDoublePreferenceInjector(): AdaptiveDoublePreference

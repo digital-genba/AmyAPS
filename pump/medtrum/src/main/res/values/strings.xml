@@ -29,6 +29,7 @@
     <string name="fw_version_label">FW version</string>
     <string name="patch_no_label">Patch no</string>
     <string name="patch_expiry_label">Patch expires</string>
+    <string name="patch_activation_time_label">Activation</string>
     <string name="refresh_label">Refresh</string>
     <string name="reset_alarms_label">Reset alarms</string>
     <string name="change_patch_label">Change Patch</string>
@@ -64,6 +65,7 @@
 
     <string name="step_prepare_patch">Activate Patch</string>
     <string name="step_prepare_patch_connect">Connect and Fill</string>
+    <string name="step_select_insulin">Select Insulin</string>
     <string name="step_prime">Prime</string>
     <string name="step_priming">Priming</string>
     <string name="step_priming_complete">Priming Complete</string>
@@ -109,6 +111,7 @@
 
     <string name="activation_in_progress">Oops! Something went wrong, it seems there is already an activation in progress.</string>
     <string name="press_retry_or_discard">Press <b>Next</b> to resume the activation or <b>Discard</b> to reset the activation status.</string>
+    <string name="retry_activation_filled_error">Activation cannot be resumed. The pump state has been lost. Do NOT re-prime, as the patch may already be inserted. Please discard the patch and start a new activation.</string>
     <string name="reading_activation_status">Please wait, reading activation status from pump.</string>
 
     <!-- settings-->
@@ -117,9 +120,18 @@
     <string name="sn_input_title">Serial Number</string>
     <string name="sn_input_summary">Enter the serial number of your pump base.</string>
     <string name="sn_input_invalid">Invalid serial number!</string>
+    <string name="change_sn">Change</string>
     <string name="pump_unsupported">Pump untested: %1$s! Please contact us at discord or github for support</string>
     <string name="alarm_setting_title">Alarm Settings</string>
     <string name="alarm_setting_summary">Select your preferred pump alarm settings.</string>
+    <string name="alarm_setting_light_vibrate_beep">Light, vibrate and beep</string>
+    <string name="alarm_setting_light_vibrate">Light and vibrate</string>
+    <string name="alarm_setting_light_beep">Light and beep</string>
+    <string name="alarm_setting_light">Light</string>
+    <string name="alarm_setting_vibrate_beep">Vibrate and beep</string>
+    <string name="alarm_setting_vibrate">Vibrate</string>
+    <string name="alarm_setting_beep">Beep</string>
+    <string name="alarm_setting_silent">Silent</string>
     <string name="pump_warning_notification_title">Notification on pump warning</string>
     <string name="pump_warning_notification_summary">Show notification on non critical pump warnings: low battery, low reservoir (20 units) and expires soon. Recommended to leave enabled when pump alarms are set to silent.</string>
     <string name="pump_warning_expiry_hour_title">Pump expiry warning [hours]</string>

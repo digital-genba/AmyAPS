@@ -10,7 +10,7 @@ import org.json.JSONArray
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.Mock
-import org.mockito.Mockito.`when`
+import org.mockito.kotlin.whenever
 import javax.inject.Provider
 
 class QuickWizardTest : TestBaseWithProfile() {
@@ -19,6 +19,7 @@ class QuickWizardTest : TestBaseWithProfile() {
     @Mock lateinit var persistenceLayer: PersistenceLayer
     @Mock lateinit var glucoseStatusProvider: GlucoseStatusProvider
     @Mock lateinit var bolusWizardProvider: Provider<BolusWizard>
+    @Mock lateinit var quickWizardProvider: Provider<QuickWizard>
 
     private val data1 = "{\"buttonText\":\"Meal\",\"carbs\":36,\"validFrom\":0,\"validTo\":18000," +
         "\"useBG\":0,\"useCOB\":0,\"useBolusIOB\":0,\"useBasalIOB\":0,\"useTrend\":0,\"useSuperBolus\":0,\"useTemptarget\":0}"
@@ -36,8 +37,8 @@ class QuickWizardTest : TestBaseWithProfile() {
 
     @BeforeEach
     fun setup() {
-        `when`(preferences.get(StringNonKey.QuickWizard)).thenReturn("[]")
-        val quickWizardEntry = QuickWizardEntry(aapsLogger, preferences, profileFunction, loop, iobCobCalculator, persistenceLayer, dateUtil, glucoseStatusProvider, bolusWizardProvider)
+        whenever(preferences.get(StringNonKey.QuickWizard)).thenReturn("[]")
+        val quickWizardEntry = QuickWizardEntry(aapsLogger, preferences, profileFunction, loop, iobCobCalculator, persistenceLayer, dateUtil, glucoseStatusProvider, bolusWizardProvider, quickWizardProvider)
         quickWizardEntry.time = mockedTime
         val quickWizardEntryProvider = Provider { quickWizardEntry }
         quickWizard = QuickWizard(preferences, quickWizardEntryProvider)

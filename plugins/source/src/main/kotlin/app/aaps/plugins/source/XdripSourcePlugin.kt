@@ -12,10 +12,10 @@ import app.aaps.core.data.model.TrendArrow
 import app.aaps.core.data.plugin.PluginType
 import app.aaps.core.data.time.T
 import app.aaps.core.data.ue.Sources
+import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
-import app.aaps.core.interfaces.logging.UserEntryLogger
 import app.aaps.core.interfaces.plugin.PluginDescription
 import app.aaps.core.interfaces.receivers.Intents
 import app.aaps.core.interfaces.resources.ResourceHelper
@@ -25,7 +25,9 @@ import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.objects.workflow.LoggingWorker
+import app.aaps.core.ui.compose.icons.IcXDrip
 import app.aaps.core.utils.receivers.DataWorkerStorage
+import app.aaps.plugins.source.compose.BgSourceComposeContent
 import kotlinx.coroutines.Dispatchers
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -35,39 +37,29 @@ import kotlin.math.round
 @Singleton
 class XdripSourcePlugin @Inject constructor(
     rh: ResourceHelper,
-    aapsLogger: AAPSLogger
+    aapsLogger: AAPSLogger,
+    preferences: Preferences,
+    config: Config,
 ) : AbstractBgSourceWithSensorInsertLogPlugin(
-    PluginDescription()
+    pluginDescription = PluginDescription()
         .mainType(PluginType.BGSOURCE)
-        .fragmentClass(BGSourceFragment::class.java.name)
+        .composeContent { plugin ->
+            BgSourceComposeContent(
+                title = rh.gs(R.string.source_xdrip)
+            )
+        }
         .pluginIcon((app.aaps.core.objects.R.drawable.ic_blooddrop_48))
+        .icon(IcXDrip)
         .preferencesId(PluginDescription.PREFERENCE_SCREEN)
         .pluginName(R.string.source_xdrip)
         .preferencesVisibleInSimpleMode(false)
         .description(R.string.description_source_xdrip),
-    aapsLogger, rh
+    aapsLogger = aapsLogger,
+    rh = rh,
+    preferences = preferences
 ), BgSource, XDripSource {
 
-    private var advancedFiltering = false
     override var sensorBatteryLevel = -1
-
-    override fun advancedFilteringSupported(): Boolean = advancedFiltering
-
-    private fun detectSource(glucoseValue: GV) {
-        advancedFiltering = arrayOf(
-            SourceSensor.DEXCOM_NATIVE_UNKNOWN,
-            SourceSensor.DEXCOM_G5_NATIVE,
-            SourceSensor.DEXCOM_G6_NATIVE,
-            SourceSensor.DEXCOM_G7_NATIVE,
-            SourceSensor.DEXCOM_G5_NATIVE_XDRIP,
-            SourceSensor.DEXCOM_G6_NATIVE_XDRIP,
-            SourceSensor.DEXCOM_G7_NATIVE_XDRIP,
-            SourceSensor.DEXCOM_G7_XDRIP,
-            SourceSensor.LIBRE_2,
-            SourceSensor.LIBRE_2_NATIVE,
-            SourceSensor.LIBRE_3,
-        ).any { it == glucoseValue.sourceSensor }
-    }
 
     // cannot be inner class because of needed injection
     class XdripSourceWorker(
@@ -80,7 +72,6 @@ class XdripSourcePlugin @Inject constructor(
         @Inject lateinit var preferences: Preferences
         @Inject lateinit var dateUtil: DateUtil
         @Inject lateinit var dataWorkerStorage: DataWorkerStorage
-        @Inject lateinit var uel: UserEntryLogger
 
         fun getSensorStartTime(bundle: Bundle): Long? {
             val now = dateUtil.now()
@@ -125,18 +116,23 @@ class XdripSourcePlugin @Inject constructor(
                     aapsLogger.debug(LTag.BGSOURCE, "Sensor start time is within 5 minutes range, skipping update.")
                     null
                 }
+
                 lastStoredSensorStartTime != null && newSensorStartTime != null &&
-                    newSensorStartTime < lastStoredSensorStartTime -> {
+                    newSensorStartTime < lastStoredSensorStartTime                 -> {
                     aapsLogger.debug(LTag.BGSOURCE, "Sensor start time is older than last stored time, skipping update.")
                     null
                 }
-                else -> newSensorStartTime
+
+                else                                                               -> newSensorStartTime
             }
             // Always update glucoseValues, but use the decided sensorStartTime
-            persistenceLayer.insertCgmSourceData(Sources.Xdrip, glucoseValues, emptyList(), finalSensorStartTime)
-                .doOnError { ret = Result.failure(workDataOf("Error" to it.toString())) }
-                .blockingGet()
-                .also { savedValues -> savedValues.all().forEach { xdripSourcePlugin.detectSource(it) } }
+            if (glucoseValues[0].timestamp > 0 && glucoseValues[0].value > 0.0) {
+                try {
+                    persistenceLayer.insertCgmSourceData(Sources.Xdrip, glucoseValues, emptyList(), finalSensorStartTime)
+                } catch (e: Exception) {
+                    ret = Result.failure(workDataOf("Error" to e.toString()))
+                }
+            } else return Result.failure(workDataOf("Error" to "missing glucoseValue"))
             xdripSourcePlugin.sensorBatteryLevel = bundle.getInt(Intents.EXTRA_SENSOR_BATTERY, -1)
             return ret
         }

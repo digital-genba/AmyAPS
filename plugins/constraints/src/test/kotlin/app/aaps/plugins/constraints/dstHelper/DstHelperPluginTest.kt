@@ -1,11 +1,7 @@
 package app.aaps.plugins.constraints.dstHelper
 
 import app.aaps.core.interfaces.aps.Loop
-import app.aaps.core.interfaces.plugin.ActivePlugin
-import app.aaps.core.interfaces.resources.ResourceHelper
-import app.aaps.core.interfaces.ui.UiInteraction
-import app.aaps.core.keys.interfaces.Preferences
-import app.aaps.shared.tests.TestBase
+import app.aaps.shared.tests.TestBaseWithProfile
 import com.google.common.truth.Truth.assertThat
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -16,19 +12,15 @@ import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
 
-class DstHelperPluginTest : TestBase() {
+class DstHelperPluginTest : TestBaseWithProfile() {
 
-    @Mock lateinit var rh: ResourceHelper
-    @Mock lateinit var preferences: Preferences
-    @Mock lateinit var activePlugin: ActivePlugin
     @Mock lateinit var loop: Loop
-    @Mock lateinit var uiInteraction: UiInteraction
 
     private lateinit var plugin: DstHelperPlugin
 
     @BeforeEach
     fun mock() {
-        plugin = DstHelperPlugin(aapsLogger, rh, preferences, activePlugin, uiInteraction, loop)
+        plugin = DstHelperPlugin(aapsLogger, rh, preferences, activePlugin, notificationManager, loop, profileFunction)
     }
 
     @Test

@@ -6,7 +6,6 @@ import androidx.work.ListenableWorker
 import androidx.work.WorkManager
 import androidx.work.testing.TestListenableWorkerBuilder
 import app.aaps.core.data.pump.defs.PumpDescription
-import app.aaps.core.interfaces.androidPermissions.AndroidPermission
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.pump.PumpSync
@@ -15,12 +14,17 @@ import app.aaps.core.objects.constraints.ConstraintObject
 import app.aaps.implementation.queue.commands.CommandTempBasalAbsolute
 import app.aaps.shared.tests.TestBaseWithProfile
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.ArgumentMatchers
 import org.mockito.Mock
-import org.mockito.Mockito
+import org.mockito.kotlin.anyOrNull
+import org.mockito.kotlin.whenever
 import kotlin.test.assertIs
 import kotlin.time.Duration.Companion.seconds
 
@@ -28,11 +32,12 @@ class QueueWorkerTest : TestBaseWithProfile() {
 
     @Mock lateinit var constraintChecker: ConstraintsChecker
     @Mock lateinit var powerManager: PowerManager
-    @Mock lateinit var androidPermission: AndroidPermission
     @Mock lateinit var uiInteraction: UiInteraction
     @Mock lateinit var persistenceLayer: PersistenceLayer
     @Mock lateinit var jobName: CommandQueueName
     @Mock lateinit var workManager: WorkManager
+
+    private val testScope = CoroutineScope(Dispatchers.Unconfined)
 
     init {
         addInjector {
@@ -49,7 +54,6 @@ class QueueWorkerTest : TestBaseWithProfile() {
                 it.activePlugin = activePlugin
                 it.rh = rh
                 it.preferences = preferences
-                it.androidPermission = androidPermission
                 it.config = config
             }
         }
@@ -60,29 +64,30 @@ class QueueWorkerTest : TestBaseWithProfile() {
 
     @BeforeEach
     fun prepare() {
+        whenever(persistenceLayer.observeChanges(anyOrNull<Class<*>>())).thenReturn(emptyFlow())
         commandQueue = CommandQueueImplementation(
-            injector, aapsLogger, rxBus, aapsSchedulers, rh, constraintChecker,
-            profileFunction, activePlugin, context, preferences, config, dateUtil, fabricPrivacy, androidPermission,
-            uiInteraction, persistenceLayer, decimalFormatter, pumpEnactResultProvider, jobName, workManager
+            injector, aapsLogger, rxBus, rh, constraintChecker,
+            profileFunction, activePlugin, context, config, dateUtil, fabricPrivacy,
+            uiInteraction, notificationManager, persistenceLayer, decimalFormatter, pumpEnactResultProvider, jobName, workManager, testScope
         )
 
         val pumpDescription = PumpDescription()
         pumpDescription.basalMinimumRate = 0.1
 
-        Mockito.`when`(context.getSystemService(Context.POWER_SERVICE)).thenReturn(powerManager)
-        Mockito.`when`(profileFunction.getProfile()).thenReturn(validProfile)
+        whenever(context.getSystemService(Context.POWER_SERVICE)).thenReturn(powerManager)
+        runBlocking { whenever(profileFunction.getProfile()).thenReturn(effectiveProfile) }
 
         val bolusConstraint = ConstraintObject(0.0, aapsLogger)
-        Mockito.`when`(constraintChecker.applyBolusConstraints(anyObject())).thenReturn(bolusConstraint)
-        Mockito.`when`(constraintChecker.applyExtendedBolusConstraints(anyObject())).thenReturn(bolusConstraint)
+        whenever(constraintChecker.applyBolusConstraints(anyOrNull())).thenReturn(bolusConstraint)
+        whenever(constraintChecker.applyExtendedBolusConstraints(anyOrNull())).thenReturn(bolusConstraint)
         val carbsConstraint = ConstraintObject(0, aapsLogger)
-        Mockito.`when`(constraintChecker.applyCarbsConstraints(anyObject())).thenReturn(carbsConstraint)
+        whenever(constraintChecker.applyCarbsConstraints(anyOrNull())).thenReturn(carbsConstraint)
         val rateConstraint = ConstraintObject(0.0, aapsLogger)
-        Mockito.`when`(constraintChecker.applyBasalConstraints(anyObject(), anyObject())).thenReturn(rateConstraint)
+        whenever(constraintChecker.applyBasalConstraints(anyOrNull(), anyOrNull())).thenReturn(rateConstraint)
         val percentageConstraint = ConstraintObject(0, aapsLogger)
-        Mockito.`when`(constraintChecker.applyBasalPercentConstraints(anyObject(), anyObject()))
+        whenever(constraintChecker.applyBasalPercentConstraints(anyOrNull(), anyOrNull()))
             .thenReturn(percentageConstraint)
-        Mockito.`when`(rh.gs(ArgumentMatchers.eq(app.aaps.core.ui.R.string.temp_basal_absolute), anyObject(), anyObject())).thenReturn("TEMP BASAL %1\$.2f U/h %2\$d min")
+        whenever(rh.gs(ArgumentMatchers.eq(app.aaps.core.ui.R.string.temp_basal_absolute), anyOrNull(), anyOrNull())).thenReturn("TEMP BASAL %1\$.2f U/h %2\$d min")
 
         sut = TestListenableWorkerBuilder<QueueWorker>(context).build()
     }

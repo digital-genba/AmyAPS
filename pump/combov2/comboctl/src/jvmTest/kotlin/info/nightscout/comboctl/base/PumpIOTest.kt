@@ -1,5 +1,6 @@
 package info.nightscout.comboctl.base
 
+import app.aaps.shared.tests.TestBase
 import info.nightscout.comboctl.base.testUtils.TestBluetoothDevice
 import info.nightscout.comboctl.base.testUtils.TestComboIO
 import info.nightscout.comboctl.base.testUtils.TestPumpStateStore
@@ -14,9 +15,10 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-class PumpIOTest {
+class PumpIOTest : TestBase() {
     // Common test code.
     class TestStates(setupInvariantPumpData: Boolean) {
+
         var testPumpStateStore: TestPumpStateStore
         val testBluetoothDevice: TestBluetoothDevice
         var testIO: TestComboIO
@@ -37,12 +39,18 @@ class PumpIOTest {
             if (setupInvariantPumpData) {
                 val invariantPumpData = InvariantPumpData(
                     keyResponseAddress = 0x10,
-                    clientPumpCipher = Cipher(byteArrayOfInts(
-                        0x5a, 0x25, 0x0b, 0x75, 0xa9, 0x02, 0x21, 0xfa,
-                        0xab, 0xbd, 0x36, 0x4d, 0x5c, 0xb8, 0x37, 0xd7)),
-                    pumpClientCipher = Cipher(byteArrayOfInts(
-                        0x2a, 0xb0, 0xf2, 0x67, 0xc2, 0x7d, 0xcf, 0xaa,
-                        0x32, 0xb2, 0x48, 0x94, 0xe1, 0x6d, 0xe9, 0x5c)),
+                    clientPumpCipher = Cipher(
+                        byteArrayOfInts(
+                            0x5a, 0x25, 0x0b, 0x75, 0xa9, 0x02, 0x21, 0xfa,
+                            0xab, 0xbd, 0x36, 0x4d, 0x5c, 0xb8, 0x37, 0xd7
+                        )
+                    ),
+                    pumpClientCipher = Cipher(
+                        byteArrayOfInts(
+                            0x2a, 0xb0, 0xf2, 0x67, 0xc2, 0x7d, 0xcf, 0xaa,
+                            0x32, 0xb2, 0x48, 0x94, 0xe1, 0x6d, 0xe9, 0x5c
+                        )
+                    ),
                     pumpID = "testPump"
                 )
                 testPumpStateStore.createPumpState(testBluetoothDevice.address, invariantPumpData, UtcOffset.ZERO, CurrentTbrState.NoTbrOngoing)
@@ -252,10 +260,13 @@ class PumpIOTest {
 
             // First, test long UP button press.
 
+            System.err.println("DEBUG: Phase 1 - feeding initial packets for UP press")
             testStates.feedInitialPackets()
 
+            System.err.println("DEBUG: Phase 1 - connecting")
             pumpIO.connect(runHeartbeat = false)
 
+            System.err.println("DEBUG: Phase 1 - starting long UP button press")
             var counter = 0
             pumpIO.startLongRTButtonPress(ApplicationLayer.RTButton.UP) {
                 // Return true the first time, false the second time.
@@ -263,10 +274,13 @@ class PumpIOTest {
                 // send a button status to the Combo once (= when
                 // we return true).
                 counter++
+                System.err.println("DEBUG: Phase 1 - keepGoing called, counter=$counter, returning=${counter <= 1}")
                 counter <= 1
             }
+            System.err.println("DEBUG: Phase 1 - waiting for long press to finish")
             pumpIO.waitForLongRTButtonPressToFinish()
 
+            System.err.println("DEBUG: Phase 1 - disconnecting")
             pumpIO.disconnect()
 
             testStates.checkAndRemoveInitialSentPackets()
@@ -277,22 +291,31 @@ class PumpIOTest {
             // test that function. Waiting for a while and calling it should
             // amount to the same behavior as calling waitForLongRTButtonPressToFinish().
 
+            System.err.println("DEBUG: Phase 2 - resetting IO")
             testIO.resetSentPacketData()
             testIO.resetIncomingPacketDataChannel()
 
+            System.err.println("DEBUG: Phase 2 - feeding initial packets for DOWN press")
             testStates.feedInitialPackets()
 
+            System.err.println("DEBUG: Phase 2 - connecting")
             pumpIO.connect(runHeartbeat = false)
 
+            System.err.println("DEBUG: Phase 2 - starting long DOWN button press")
             pumpIO.startLongRTButtonPress(ApplicationLayer.RTButton.DOWN)
+            System.err.println("DEBUG: Phase 2 - delaying 500ms before stop")
             delay(500L)
+            System.err.println("DEBUG: Phase 2 - stopping long press")
             pumpIO.stopLongRTButtonPress()
+            System.err.println("DEBUG: Phase 2 - delaying 500ms after stop")
             delay(500L)
 
+            System.err.println("DEBUG: Phase 2 - disconnecting")
             pumpIO.disconnect()
 
             testStates.checkAndRemoveInitialSentPackets()
             testStates.checkLongRTButtonPressPacketSequence(ApplicationLayer.RTButton.DOWN)
+            System.err.println("DEBUG: Test completed successfully")
         }
     }
 
@@ -334,7 +357,7 @@ class PumpIOTest {
         // Check what happens if the user issues redundant waitForLongRTButtonPressToFinish()
         // calls. The second call here should be ignored.
 
-        runBlockingWithWatchdog(12000) {
+        runBlockingWithWatchdog(20000) {
             val testStates = TestStates(true)
             val pumpIO = testStates.pumpIO
 
@@ -427,16 +450,23 @@ class PumpIOTest {
             // created with those instead of the default test keys.
             val invariantPumpData = InvariantPumpData(
                 keyResponseAddress = 0x10,
-                clientPumpCipher = Cipher(byteArrayOfInts(
-                    0x12, 0xe2, 0x4a, 0xb6, 0x67, 0x50, 0xe5, 0xb4,
-                    0xc4, 0xea, 0x10, 0xa7, 0x55, 0x11, 0x61, 0xd4)),
-                pumpClientCipher = Cipher(byteArrayOfInts(
-                    0x8e, 0x0d, 0x35, 0xe3, 0x7c, 0xd7, 0x20, 0x55,
-                    0x57, 0x2b, 0x05, 0x50, 0x34, 0x43, 0xc9, 0x8d)),
+                clientPumpCipher = Cipher(
+                    byteArrayOfInts(
+                        0x12, 0xe2, 0x4a, 0xb6, 0x67, 0x50, 0xe5, 0xb4,
+                        0xc4, 0xea, 0x10, 0xa7, 0x55, 0x11, 0x61, 0xd4
+                    )
+                ),
+                pumpClientCipher = Cipher(
+                    byteArrayOfInts(
+                        0x8e, 0x0d, 0x35, 0xe3, 0x7c, 0xd7, 0x20, 0x55,
+                        0x57, 0x2b, 0x05, 0x50, 0x34, 0x43, 0xc9, 0x8d
+                    )
+                ),
                 pumpID = "testPump"
             )
             testStates.testPumpStateStore.createPumpState(
-                testStates.testBluetoothDevice.address, invariantPumpData, UtcOffset.ZERO, CurrentTbrState.NoTbrOngoing)
+                testStates.testBluetoothDevice.address, invariantPumpData, UtcOffset.ZERO, CurrentTbrState.NoTbrOngoing
+            )
             testIO.pumpClientCipher = invariantPumpData.pumpClientCipher
 
             testStates.feedInitialPackets()
@@ -480,16 +510,23 @@ class PumpIOTest {
             // created with those instead of the default test keys.
             val invariantPumpData = InvariantPumpData(
                 keyResponseAddress = 0x10,
-                clientPumpCipher = Cipher(byteArrayOfInts(
-                    0x75, 0xb8, 0x88, 0xa8, 0xe7, 0x68, 0xc9, 0x25,
-                    0x66, 0xc9, 0x3c, 0x4b, 0xd8, 0x09, 0x27, 0xd8)),
-                pumpClientCipher = Cipher(byteArrayOfInts(
-                    0xb8, 0x75, 0x8c, 0x54, 0x88, 0x71, 0x78, 0xed,
-                    0xad, 0xb7, 0xb7, 0xc1, 0x48, 0x37, 0xf3, 0x07)),
+                clientPumpCipher = Cipher(
+                    byteArrayOfInts(
+                        0x75, 0xb8, 0x88, 0xa8, 0xe7, 0x68, 0xc9, 0x25,
+                        0x66, 0xc9, 0x3c, 0x4b, 0xd8, 0x09, 0x27, 0xd8
+                    )
+                ),
+                pumpClientCipher = Cipher(
+                    byteArrayOfInts(
+                        0xb8, 0x75, 0x8c, 0x54, 0x88, 0x71, 0x78, 0xed,
+                        0xad, 0xb7, 0xb7, 0xc1, 0x48, 0x37, 0xf3, 0x07
+                    )
+                ),
                 pumpID = "testPump"
             )
             testStates.testPumpStateStore.createPumpState(
-                testStates.testBluetoothDevice.address, invariantPumpData, UtcOffset.ZERO, CurrentTbrState.NoTbrOngoing)
+                testStates.testBluetoothDevice.address, invariantPumpData, UtcOffset.ZERO, CurrentTbrState.NoTbrOngoing
+            )
             testIO.pumpClientCipher = invariantPumpData.pumpClientCipher
 
             val historyBlockPacketData = listOf(

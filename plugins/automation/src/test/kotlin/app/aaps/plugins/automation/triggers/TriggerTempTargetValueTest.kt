@@ -5,22 +5,23 @@ import app.aaps.core.data.model.TT
 import app.aaps.plugins.automation.R
 import app.aaps.plugins.automation.elements.Comparator
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.mockito.Mockito.`when`
+import org.mockito.kotlin.whenever
 import org.skyscreamer.jsonassert.JSONAssert
 
 class TriggerTempTargetValueTest : TriggerTestBase() {
 
     @BeforeEach
     fun prepare() {
-        `when`(profileFunction.getUnits()).thenReturn(GlucoseUnit.MGDL)
+        whenever(profileFunction.getUnits()).thenReturn(GlucoseUnit.MGDL)
     }
 
     @Test
-    fun shouldRunTest() {
-        `when`(persistenceLayer.getTemporaryTargetActiveAt(dateUtil.now())).thenReturn(
+    fun shouldRunTest() = runTest {
+        whenever(persistenceLayer.getTemporaryTargetActiveAt(dateUtil.now())).thenReturn(
             TT(
                 duration = 60000,
                 highTarget = 140.0,
@@ -51,7 +52,7 @@ class TriggerTempTargetValueTest : TriggerTestBase() {
         assertThat(t.shouldRun()).isFalse()
         t = TriggerTempTargetValue(injector).comparator(Comparator.Compare.IS_NOT_AVAILABLE)
         assertThat(t.shouldRun()).isFalse()
-        `when`(persistenceLayer.getTemporaryTargetActiveAt(dateUtil.now())).thenReturn(null)
+        whenever(persistenceLayer.getTemporaryTargetActiveAt(dateUtil.now())).thenReturn(null)
         assertThat(t.shouldRun()).isTrue()
     }
 

@@ -2,8 +2,6 @@ package app.aaps.pump.insight
 
 import android.annotation.SuppressLint
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -15,9 +13,13 @@ import app.aaps.core.interfaces.rx.AapsSchedulers
 import app.aaps.core.interfaces.rx.bus.RxBus
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.fabric.FabricPrivacy
+import app.aaps.core.ui.extensions.runOnUiThread
 import app.aaps.core.ui.extensions.toVisibility
 import app.aaps.pump.insight.databinding.LocalInsightFragmentBinding
-import app.aaps.pump.insight.descriptors.*
+import app.aaps.pump.insight.descriptors.ActiveBolus
+import app.aaps.pump.insight.descriptors.BolusType
+import app.aaps.pump.insight.descriptors.InsightState
+import app.aaps.pump.insight.descriptors.OperatingMode
 import app.aaps.pump.insight.events.EventLocalInsightUpdateGUI
 import dagger.android.support.DaggerFragment
 import io.reactivex.rxjava3.disposables.CompositeDisposable
@@ -55,7 +57,8 @@ class InsightFragment : DaggerFragment(), View.OnClickListener {
 
     @Synchronized override fun onResume() {
         super.onResume()
-        disposable.add(rxBus
+        disposable.add(
+            rxBus
                            .toObservable(EventLocalInsightUpdateGUI::class.java)
                            .observeOn(aapsSchedulers.main)
                            .subscribe({ updateGUI() }) { throwable: Throwable? -> fabricPrivacy.logException(throwable!!) }
@@ -75,6 +78,7 @@ class InsightFragment : DaggerFragment(), View.OnClickListener {
 
     @Synchronized override fun onDestroyView() {
         super.onDestroyView()
+        _binding = null
     }
 
     override fun onClick(v: View) {
@@ -84,7 +88,7 @@ class InsightFragment : DaggerFragment(), View.OnClickListener {
                     binding.operatingModeButton.isEnabled = false
                     operatingModeCallback = object : Callback() {
                         override fun run() {
-                            Handler(Looper.getMainLooper()).post {
+                            runOnUiThread {
                                 operatingModeCallback = null
                                 updateGUI()
                             }
@@ -104,7 +108,7 @@ class InsightFragment : DaggerFragment(), View.OnClickListener {
                     binding.tbrOverNotification.isEnabled = false
                     tbrOverNotificationCallback = object : Callback() {
                         override fun run() {
-                            Handler(Looper.getMainLooper()).post {
+                            runOnUiThread {
                                 tbrOverNotificationCallback = null
                                 updateGUI()
                             }
@@ -118,7 +122,7 @@ class InsightFragment : DaggerFragment(), View.OnClickListener {
                 binding.refresh.isEnabled = false
                 refreshCallback = object : Callback() {
                     override fun run() {
-                        Handler(Looper.getMainLooper()).post {
+                        runOnUiThread {
                             refreshCallback = null
                             updateGUI()
                         }
@@ -297,7 +301,7 @@ class InsightFragment : DaggerFragment(), View.OnClickListener {
     }
 
     private fun getLastBolusItem() {
-        if (insightPlugin.lastBolusAmount.equals(0.0) || insightPlugin.lastBolusTimestamp == 0L) {
+        if (insightPlugin.lastBolusAmount.value?.cU?.equals(0.0) != false || insightPlugin.lastBolusTimestamp == 0L) {
             binding.lastBolusLine.visibility = View.GONE
             return
         }
@@ -310,7 +314,7 @@ class InsightFragment : DaggerFragment(), View.OnClickListener {
         } else {
             dateUtil.hourAgo(insightPlugin.lastBolusTimestamp, rh)
         }
-        binding.lastBolus.text = rh.gs(R.string.insight_last_bolus_formater, insightPlugin.lastBolusAmount, unit, ago)
+        binding.lastBolus.text = rh.gs(R.string.insight_last_bolus_formater, insightPlugin.lastBolusAmount.value?.cU ?: 0.0, unit, ago) // Todo: ConcentratedUnits to be formated with IU + CU in Fragment
     }
 
     private fun getBolusItems() {

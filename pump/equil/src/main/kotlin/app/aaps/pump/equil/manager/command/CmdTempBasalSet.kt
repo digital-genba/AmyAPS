@@ -3,6 +3,7 @@ package app.aaps.pump.equil.manager.command
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.keys.interfaces.Preferences
+import app.aaps.core.utils.notify
 import app.aaps.pump.equil.database.EquilHistoryRecord
 import app.aaps.pump.equil.manager.EquilManager
 import app.aaps.pump.equil.manager.Utils
@@ -48,8 +49,8 @@ class CmdTempBasalSet(
         // val index = data[4].toInt()
         // val status = data[6].toInt() and 0xff
         synchronized(this) {
-            cmdStatus = true
-            (this as Object).notify()
+            cmdSuccess = true
+            notify()
         }
     }
 

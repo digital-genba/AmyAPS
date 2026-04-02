@@ -18,7 +18,6 @@ import java.util.TimeZone
         childColumns = ["referenceId"]
     )],
     indices = [
-        Index("id"),
         Index("nightscoutId"),
         Index("referenceId"),
         Index("timestamp")
@@ -56,7 +55,8 @@ data class RunningMode(
         SUPER_BOLUS,
         DISCONNECTED_PUMP,
         SUSPENDED_BY_PUMP,
-        SUSPENDED_BY_USER
+        SUSPENDED_BY_USER,
+        SUSPENDED_BY_DST
         ;
     }
 }

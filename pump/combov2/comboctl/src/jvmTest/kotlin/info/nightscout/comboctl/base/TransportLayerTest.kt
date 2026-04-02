@@ -1,5 +1,6 @@
 package info.nightscout.comboctl.base
 
+import app.aaps.shared.tests.TestBase
 import info.nightscout.comboctl.base.testUtils.TestComboIO
 import info.nightscout.comboctl.base.testUtils.TestPumpStateStore
 import info.nightscout.comboctl.base.testUtils.WatchdogTimeoutException
@@ -16,7 +17,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
-class TransportLayerTest {
+class TransportLayerTest : TestBase() {
 
     @Test
     fun parsePacketData() {
@@ -270,7 +271,7 @@ class TransportLayerTest {
                 "Exception thrown by in packet receiver (this exception was expected by the test): $expectedError"
             )
             assertNotNull(expectedError)
-            assertIs<TransportLayer.ErrorResponseException>(expectedError!!.cause)
+            assertIs<TransportLayer.ErrorResponseException>(expectedError.cause)
 
             // At this point, the packet receiver is not running anymore
             // due to the exception. Attempts at sending and receiving

@@ -6,22 +6,23 @@ import app.aaps.core.data.model.SourceSensor
 import app.aaps.core.data.model.TrendArrow
 import app.aaps.plugins.automation.elements.Comparator
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.mockito.Mockito.`when`
+import org.mockito.kotlin.whenever
 import org.skyscreamer.jsonassert.JSONAssert
 
 class TriggerBgTest : TriggerTestBase() {
 
     @BeforeEach
     fun prepare() {
-        `when`(profileFunction.getUnits()).thenReturn(GlucoseUnit.MGDL)
+        whenever(profileFunction.getUnits()).thenReturn(GlucoseUnit.MGDL)
     }
 
     @Test
-    fun shouldRunTest() {
-        `when`(autosensDataStore.getBucketedDataTableCopy()).thenReturn(generateOneCurrentRecordBgData())
+    fun shouldRunTest() = runTest {
+        whenever(autosensDataStore.getBucketedDataTableCopy()).thenReturn(generateOneCurrentRecordBgData())
         var t: TriggerBg = TriggerBg(injector).setUnits(GlucoseUnit.MMOL).setValue(4.1).comparator(Comparator.Compare.IS_EQUAL)
         assertThat(t.shouldRun()).isFalse()
         t = TriggerBg(injector).setUnits(GlucoseUnit.MGDL).setValue(214.0).comparator(Comparator.Compare.IS_EQUAL)
@@ -40,7 +41,7 @@ class TriggerBgTest : TriggerTestBase() {
         assertThat(t.shouldRun()).isTrue()
         t = TriggerBg(injector).setUnits(GlucoseUnit.MGDL).setValue(213.0).comparator(Comparator.Compare.IS_EQUAL_OR_LESSER)
         assertThat(t.shouldRun()).isFalse()
-        `when`(autosensDataStore.getBucketedDataTableCopy()).thenReturn(ArrayList())
+        whenever(autosensDataStore.getBucketedDataTableCopy()).thenReturn(ArrayList())
         t = TriggerBg(injector).setUnits(GlucoseUnit.MGDL).setValue(213.0).comparator(Comparator.Compare.IS_EQUAL_OR_LESSER)
         assertThat(t.shouldRun()).isFalse()
         t = TriggerBg(injector).comparator(Comparator.Compare.IS_NOT_AVAILABLE)
@@ -48,7 +49,7 @@ class TriggerBgTest : TriggerTestBase() {
     }
 
     @Test
-    fun copyConstructorTest() {
+    fun copyConstructorTest() = runTest {
         val t: TriggerBg = TriggerBg(injector).setUnits(GlucoseUnit.MGDL).setValue(213.0).comparator(Comparator.Compare.IS_EQUAL_OR_LESSER)
         val t1 = t.duplicate() as TriggerBg
         assertThat(t1.bg.value).isWithin(0.01).of(213.0)
@@ -59,13 +60,13 @@ class TriggerBgTest : TriggerTestBase() {
     private var bgJson = "{\"data\":{\"comparator\":\"IS_EQUAL\",\"bg\":4.1,\"units\":\"mmol\"},\"type\":\"TriggerBg\"}"
 
     @Test
-    fun toJSONTest() {
+    fun toJSONTest() = runTest {
         val t: TriggerBg = TriggerBg(injector).setUnits(GlucoseUnit.MMOL).setValue(4.1).comparator(Comparator.Compare.IS_EQUAL)
         JSONAssert.assertEquals(bgJson, t.toJSON(), true)
     }
 
     @Test
-    fun fromJSONTest() {
+    fun fromJSONTest() = runTest {
         val t: TriggerBg = TriggerBg(injector).setUnits(GlucoseUnit.MMOL).setValue(4.1).comparator(Comparator.Compare.IS_EQUAL)
         val t2 = TriggerDummy(injector).instantiate(JSONObject(t.toJSON())) as TriggerBg
         assertThat(t2.comparator.value).isEqualTo(Comparator.Compare.IS_EQUAL)
@@ -74,7 +75,7 @@ class TriggerBgTest : TriggerTestBase() {
     }
 
     @Test
-    fun iconTest() {
+    fun iconTest() = runTest {
         assertThat(TriggerBg(injector).icon().get()).isEqualTo(app.aaps.core.objects.R.drawable.ic_cp_bgcheck)
     }
 
