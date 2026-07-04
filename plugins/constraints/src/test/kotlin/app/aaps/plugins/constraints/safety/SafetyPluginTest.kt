@@ -86,7 +86,8 @@ class SafetyPluginTest : TestBaseWithProfile() {
             OpenAPSSMBPlugin(
                 aapsLogger, rxBus, constraintChecker, rh, profileFunction, profileUtil, config, activePlugin, insulin, iobCobCalculator,
                 hardLimits, preferences, dateUtil, processedTbrEbData, persistenceLayer, glucoseStatusProvider, tddCalculator, bgQualityCheck,
-                notificationManager, determineBasalSMB, profiler, GlucoseStatusCalculatorSMB(aapsLogger, iobCobCalculator, dateUtil, decimalFormatter, deltaCalculator), apsResultProvider, ch
+                notificationManager, determineBasalSMB, profiler, GlucoseStatusCalculatorSMB(aapsLogger, iobCobCalculator, dateUtil, decimalFormatter, deltaCalculator), apsResultProvider, ch,
+                fabricPrivacy
             )
         openAPSAMAPlugin =
             OpenAPSAMAPlugin(
@@ -105,8 +106,8 @@ class SafetyPluginTest : TestBaseWithProfile() {
     }
 
     @Test
-    fun disabledEngineeringModeShouldLimitClosedLoop() {
-        whenever(loop.runningMode).thenReturn(RM.Mode.CLOSED_LOOP)
+    fun disabledEngineeringModeShouldLimitClosedLoop() = runTest {
+        whenever(loop.runningMode()).thenReturn(RM.Mode.CLOSED_LOOP)
         whenever(config.isEngineeringModeOrRelease()).thenReturn(false)
         val c = safetyPlugin.isClosedLoopAllowed(ConstraintObject(true, aapsLogger))
         assertThat(c.getReasons()).contains("Running dev version. Closed loop is disabled.")
@@ -114,7 +115,7 @@ class SafetyPluginTest : TestBaseWithProfile() {
     }
 
     @Test
-    fun notEnabledSMBInPreferencesDisablesSMB() {
+    fun notEnabledSMBInPreferencesDisablesSMB() = runTest {
         whenever(preferences.get(BooleanKey.ApsUseSmb)).thenReturn(false)
         whenever(constraintChecker.isClosedLoopAllowed(anyOrNull())).thenReturn(ConstraintObject(true, aapsLogger))
         val c = openAPSSMBPlugin.isSMBModeEnabled(ConstraintObject(true, aapsLogger))
@@ -123,7 +124,7 @@ class SafetyPluginTest : TestBaseWithProfile() {
     }
 
     @Test
-    fun openLoopPreventsSMB() {
+    fun openLoopPreventsSMB() = runTest {
         whenever(preferences.get(BooleanKey.ApsUseSmb)).thenReturn(true)
         whenever(constraintChecker.isClosedLoopAllowed()).thenReturn(ConstraintObject(false, aapsLogger))
         val c = safetyPlugin.isSMBModeEnabled(ConstraintObject(true, aapsLogger))
@@ -243,6 +244,28 @@ Safety: Limiting max basal rate to 500.00 U/h because of pump limit
     }
 
     @Test
+    fun bolusIsFlooredToStepNotRoundedAboveLimit() {
+        // Cap 2.27 U (not a multiple of the 0.1 bolus step): round-to-nearest would give 2.3 U,
+        // exceeding the limit. Floor must give 2.2 U.
+        whenever(preferences.get(DoubleKey.SafetyMaxBolus)).thenReturn(2.27)
+        whenever(preferences.get(StringKey.SafetyAge)).thenReturn("child")
+        val d = safetyPlugin.applyBolusConstraints(ConstraintObject(Double.MAX_VALUE, aapsLogger))
+        assertThat(d.value()).isWithin(0.001).of(2.2)
+    }
+
+    @Test
+    fun basalRateIsFlooredToStepNotRoundedAboveLimit() {
+        // Hard limit 2.0 U/h with a 0.3 step: round-to-nearest would give 2.1 U/h, above the limit.
+        // Floor must give 1.8 U/h.
+        whenever(preferences.get(StringKey.SafetyAge)).thenReturn("child")
+        pumpDescription.tempBasalStyle = PumpDescription.ABSOLUTE
+        pumpDescription.tempAbsoluteStep = 0.3
+        val c = ConstraintObject(Double.MAX_VALUE, aapsLogger)
+        safetyPlugin.applyBasalConstraints(c, validProfile)
+        assertThat(c.value()).isWithin(0.001).of(1.8)
+    }
+
+    @Test
     fun doNotAllowNegativeBolusAmount() {
         whenever(preferences.get(DoubleKey.SafetyMaxBolus)).thenReturn(3.0)
         whenever(preferences.get(StringKey.SafetyAge)).thenReturn("child")
@@ -264,12 +287,12 @@ Safety: Limiting max basal rate to 500.00 U/h because of pump limit
     }
 
     @Test
-    fun iobShouldBeLimited() {
+    fun iobShouldBeLimited() = runTest {
         openAPSAMAPlugin.setPluginEnabledBlocking(PluginType.APS, true)
         openAPSSMBPlugin.setPluginEnabledBlocking(PluginType.APS, true)
         //whenever(openAPSSMBPlugin.isEnabled()).thenReturn(true)
         //whenever(openAPSAMAPlugin.isEnabled()).thenReturn(false)
-        whenever(loop.runningMode).thenReturn(RM.Mode.CLOSED_LOOP_LGS)
+        whenever(loop.runningMode()).thenReturn(RM.Mode.CLOSED_LOOP_LGS)
         whenever(preferences.get(DoubleKey.ApsAmaMaxIob)).thenReturn(1.5)
         whenever(preferences.get(DoubleKey.ApsSmbMaxIob)).thenReturn(3.0)
         whenever(preferences.get(StringKey.SafetyAge)).thenReturn("teenage")
@@ -289,10 +312,4 @@ Safety: Limiting max basal rate to 500.00 U/h because of pump limit
         assertThat(d.getMostLimitedReasons()).isEqualTo("OpenAPSSMB: Limiting IOB to 3.0 U because of max value in preferences")
     }
 
-    @Test
-    fun preferenceScreenTest() {
-        val screen = preferenceManager.createPreferenceScreen(context)
-        safetyPlugin.addPreferenceScreen(preferenceManager, screen, context, null)
-        assertThat(screen.preferenceCount).isGreaterThan(0)
-    }
 }

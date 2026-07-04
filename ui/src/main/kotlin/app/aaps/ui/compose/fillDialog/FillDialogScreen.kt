@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -18,11 +17,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -32,15 +29,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.ui.draw.clip
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -50,34 +43,30 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.aaps.core.data.model.ICfg
 import app.aaps.core.data.model.TE
-import app.aaps.core.ui.compose.AapsTheme
 import app.aaps.core.ui.compose.AapsTopAppBar
 import app.aaps.core.ui.compose.DateTimeSection
 import app.aaps.core.ui.compose.EventTimeRow
+import app.aaps.core.ui.compose.ExcludeFromJacocoGeneratedReport
 import app.aaps.core.ui.compose.NumberInputRow
+import app.aaps.core.ui.compose.bottomBarSafeArea
 import app.aaps.core.ui.compose.clearFocusOnTap
-import app.aaps.core.ui.compose.dialogs.OkCancelDialog
+import app.aaps.core.ui.compose.consumeOverscroll
+import app.aaps.core.ui.compose.dialogs.ElementConfirmationDialog
 import app.aaps.core.ui.compose.insulin.SelectInsulin
 import app.aaps.core.ui.compose.navigation.ElementType
-import app.aaps.core.ui.compose.navigation.color
-import app.aaps.core.ui.compose.navigation.icon
 import app.aaps.core.ui.compose.navigation.labelResId
-import app.aaps.core.ui.compose.preference.AdaptivePreferenceList
+import app.aaps.core.ui.compose.preference.PreferenceSheetContent
 import app.aaps.core.ui.compose.preference.PreferenceSubScreenDef
-import app.aaps.core.ui.compose.preference.ProvidePreferenceTheme
 import app.aaps.core.ui.compose.siteRotation.SiteLocationSummary
 import app.aaps.ui.R
 import app.aaps.ui.compose.EventDatePicker
@@ -142,29 +131,13 @@ fun FillDialogScreen(
 
     // Confirmation dialog
     if (showConfirmation) {
-        val summaryLines = viewModel.buildConfirmationSummary()
-
         if (!uiState.hasAction) {
             showConfirmation = false
             showNoAction = true
         } else {
-            val insulinColor = AapsTheme.elementColors.insulin
-            val warningColor = MaterialTheme.colorScheme.error
-            val message = buildAnnotatedString {
-                summaryLines.forEachIndexed { index, line ->
-                    if (index > 0) append("\n")
-                    when (line.color) {
-                        FillDialogViewModel.SummaryColor.INSULIN -> withStyle(SpanStyle(color = insulinColor)) { append(line.text) }
-                        FillDialogViewModel.SummaryColor.WARNING -> withStyle(SpanStyle(color = warningColor)) { append(line.text) }
-                        FillDialogViewModel.SummaryColor.NORMAL  -> append(line.text)
-                    }
-                }
-            }
-            OkCancelDialog(
-                title = stringResource(ElementType.FILL.labelResId()),
-                message = message,
-                icon = ElementType.FILL.icon(),
-                iconTint = ElementType.FILL.color(),
+            ElementConfirmationDialog(
+                elementType = ElementType.FILL,
+                lines = viewModel.buildConfirmationSummary(),
                 onConfirm = {
                     viewModel.confirmAndSave()
                     onNavigateBack()
@@ -176,11 +149,9 @@ fun FillDialogScreen(
 
     // No action dialog
     if (showNoAction) {
-        OkCancelDialog(
-            title = stringResource(ElementType.FILL.labelResId()),
+        ElementConfirmationDialog(
+            elementType = ElementType.FILL,
             message = stringResource(CoreUiR.string.no_action_selected),
-            icon = ElementType.FILL.icon(),
-            iconTint = ElementType.FILL.color(),
             onConfirm = { showNoAction = false },
             onDismiss = { showNoAction = false }
         )
@@ -264,24 +235,12 @@ private fun FillDialogContent(
     Scaffold(
         topBar = {
             AapsTopAppBar(
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = ElementType.FILL.icon(),
-                            contentDescription = null,
-                            tint = ElementType.FILL.color()
-                        )
-                        Text(stringResource(ElementType.FILL.labelResId()))
-                    }
-                },
+                title = { Text(stringResource(ElementType.FILL.labelResId())) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = stringResource(CoreUiR.string.back)
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = stringResource(CoreUiR.string.close)
                         )
                     }
                 },
@@ -300,11 +259,14 @@ private fun FillDialogContent(
         },
         bottomBar = {
             Button(
-                onClick = onConfirmClick,
+                onClick = {
+                    focusManager.clearFocus()
+                    onConfirmClick()
+                },
                 enabled = uiState.hasAction,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .imePadding()
+                    .bottomBarSafeArea()
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
                 Icon(
@@ -327,6 +289,7 @@ private fun FillDialogContent(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+                .consumeOverscroll()
                 .verticalScroll(rememberScrollState())
                 .clearFocusOnTap(focusManager)
                 .padding(horizontal = 16.dp, vertical = 8.dp),
@@ -407,28 +370,32 @@ private fun FillDialogContent(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     // Fill/prime amount + presets
-                    if (uiState.showBolus) {
-                        Column(modifier = itemModifier) {
-                            NumberInputRow(
-                                labelResId = R.string.fill_prime_amount,
-                                value = uiState.insulin,
-                                onValueChange = onInsulinChange,
-                                valueRange = 0.0..uiState.maxInsulin,
-                                step = uiState.bolusStep,
-                                valueFormat = bolusFormat,
-                                unitLabel = stringResource(CoreUiR.string.insulin_unit_shortname)
+                    // Prime/fill amount + presets. On an AAPSCLIENT the prime can't be delivered remotely (it's a
+                    // physical at-the-pump action), so the input is shown but DISABLED (grayed); only the logging
+                    // actions (site / cartridge / insulin-type change) work on a client. showBolus = !AAPSCLIENT.
+                    Column(modifier = itemModifier) {
+                        NumberInputRow(
+                            labelResId = R.string.fill_prime_amount,
+                            value = uiState.insulin,
+                            onValueChange = onInsulinChange,
+                            valueRange = 0.0..uiState.maxInsulin,
+                            step = uiState.bolusStep,
+                            valueFormat = bolusFormat,
+                            unitLabel = stringResource(CoreUiR.string.insulin_unit_shortname),
+                            enabled = uiState.showBolus
+                        )
+
+                        if (uiState.pumpUnitsWarning != null) {
+                            Text(
+                                text = uiState.pumpUnitsWarning,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.fillMaxWidth(),
+                                textAlign = TextAlign.Center
                             )
+                        }
 
-                            if (uiState.pumpUnitsWarning != null) {
-                                Text(
-                                    text = uiState.pumpUnitsWarning,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-
+                        if (uiState.showBolus) {
                             PresetButtonsRow(
                                 presetButton1 = uiState.presetButton1,
                                 presetButton2 = uiState.presetButton2,
@@ -504,6 +471,7 @@ private fun PreviewFillDialog(uiState: FillDialogUiState, dateString: String = "
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true, name = "Site Change")
 @Composable
 private fun PreviewSiteChange() {
@@ -519,6 +487,7 @@ private fun PreviewSiteChange() {
     )
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true, name = "Cartridge Change + Multiple Insulins")
 @Composable
 private fun PreviewCartridgeChangeMultipleInsulins() {
@@ -539,6 +508,7 @@ private fun PreviewCartridgeChangeMultipleInsulins() {
     )
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true, name = "Pump Units Warning (non-U100)")
 @Composable
 private fun PreviewPumpUnitsWarning() {
@@ -559,6 +529,7 @@ private fun PreviewPumpUnitsWarning() {
     )
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true, name = "AAPS Client (No Bolus)")
 @Composable
 private fun PreviewAapsClient() {
@@ -574,6 +545,7 @@ private fun PreviewAapsClient() {
     )
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true, name = "Insulin Selection Expanded")
 @Composable
 private fun PreviewInsulinSelectionExpanded() {
@@ -630,19 +602,10 @@ private fun FillButtonSettingsSheet(
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface
     ) {
-        Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
-            Text(
-                text = stringResource(settingsDef.titleResId),
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp)
-            )
-            ProvidePreferenceTheme {
-                AdaptivePreferenceList(
-                    items = settingsDef.items
-                )
-            }
-        }
+        PreferenceSheetContent(
+            settingsDef = settingsDef,
+            modifier = Modifier.padding(bottom = 24.dp)
+        )
     }
 }
 

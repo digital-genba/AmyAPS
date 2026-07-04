@@ -45,7 +45,10 @@
     - Use `head_limit` to cap number of results
 - **Suppress verbose Bash output:**
     - Use `--quiet` flag for gradle: `.\gradlew.bat assembleFullDebug --quiet --no-daemon`
-    - Pipe to `tail -50` for long outputs
+    - Pipe to `tail -50` only when you just need to *read* output — ⚠️ a pipe makes the reported exit
+      code the **pipe's** (e.g. `tail`'s), NOT gradle's, so a FAILED build/test looks like it passed.
+      For pass/fail, redirect instead: `./gradlew.bat … --no-daemon > build.log 2>&1` then grep the log
+      (`^e: ` for Kotlin errors, `BUILD FAILED`/`BUILD SUCCESSFUL`).
     - Avoid commands that dump entire logs
 - **Be specific in searches:**
     - Narrow glob patterns: `src/**/specific/*.kt` instead of `**/*.kt`
@@ -81,10 +84,21 @@
     - After each batch, state how many remain and continue until zero remain
     - Do NOT stop early or claim "done" until truly everything is processed
     - User WILL verify results - assume accountability
-- **Always use explicit imports:**
-    - Never use fully qualified names (e.g., `kotlin.math.abs`)
-    - Always add proper import statements at the top of the file
-    - Example: Add `import kotlin.math.abs` instead of using `kotlin.math.abs()`
+- **Always use explicit imports (no exceptions):**
+    - Never use fully qualified names inline (e.g., `kotlin.math.abs`,
+      `app.aaps.core.ui.compose.icons.IcFoo`, `androidx.compose.ui.graphics.vector.ImageVector`)
+    - Always add proper `import` statements at the top of the file and use short names in code
+    - Applies to type parameters, parameter types, return types, constructor calls, property
+      delegates, `remember { mutableStateOf<Type>() }`, etc.
+    - Applies when adding new code to existing files — add the import even if only referenced once
+    - ❌ BAD: `fun composeIcon() = app.aaps.core.ui.compose.icons.IcProfile`
+    - ✅ GOOD: `import app.aaps.core.ui.compose.icons.IcProfile` at top, then
+      `fun composeIcon() = IcProfile`
+    - ❌ BAD: `mutableListOf<androidx.compose.ui.graphics.vector.ImageVector>()`
+    - ✅ GOOD: `import androidx.compose.ui.graphics.vector.ImageVector` then
+      `mutableListOf<ImageVector>()`
+    - Only exception: when two different classes with the same simple name would collide — then one
+      can stay fully qualified at use site (rare)
 - **Use centralized theme/styling:**
     - For Compose UI: Always use theme values instead of hardcoded dp/padding/colors. If proper
       setting doesn't exist, discuss it before creating hardcoded values.
@@ -128,6 +142,28 @@
   `.removeSuffix(":")`, or stripping characters from resource strings breaks localization. Different
   languages have different punctuation and formatting rules. If a string needs different formats,
   create separate resource strings instead.
+- **Never build user-facing text by concatenating strings in code** - Joining pieces like
+  `rh.gs(label) + ": " + value`, `value + " " + unit`, or `"$a/$b h"` is NOT translatable and breaks
+  RTL languages (the translator can't control the separator, order, or direction). Instead use a
+  **format-string resource template** with positional placeholders and let the value carry its own
+  unit:
+    - ❌ BAD: `rh.gs(R.string.bolus) + ": " + decimalFormatter.toPumpSupportedBolus(v, step)`
+    - ✅ GOOD:
+      `rh.gs(R.string.confirmation_line, rh.gs(R.string.bolus), decimalFormatter.toPumpSupportedBolusWithUnits(v, step))`
+      where `confirmation_line` is `"%1$s: %2$s"` — and prefer value+unit templates
+      (`format_insulin_units`, `format_carbs`, `pump_base_basal_rate`, `format_mins`,
+      `ProfileUtil.fromMgdlToStringWithUnits`) over a bare number. Most such templates already exist
+      in
+      `:core:ui`; reuse them before adding a new one.
+- **Add a `comment="..."` translator note ONLY when a new string genuinely needs it for correct
+  translation** — i.e. it has placeholders, is short/ambiguous out of context, carries units, or has
+  order-sensitive parts. Do NOT add comments blanket to every string; a plain, self-explanatory
+  sentence needs none. When you do add one, use the `comment="..."` attribute (not an XML comment) and
+  explain each placeholder with an example, mirroring existing strings:
+    - ✅ needs it (placeholders + units):
+      `<string name="preference_range_summary" comment="%1$s=current value, %2$s=unit label, %3$s=min, %4$s=max. Example: 5.0 U (0.0 – 10.0)">%1$s%2$s (%3$s – %4$s)</string>`
+    - ❌ does NOT need it (plain, unambiguous sentence — no comment):
+      `<string name="master_control_disabled_banner">Master has disabled remote control. Editing is disabled until it is re-enabled on the master.</string>`
 - **In Compose code, use `stringResource()` not `ResourceHelper`** - Compose has built-in
   `stringResource(R.string.xyz)` function. Only use `ResourceHelper` (rh) in non-Composable contexts
   (ViewModels, regular functions). This keeps Compose code cleaner and more idiomatic.
@@ -140,6 +176,29 @@
   }
   ```
   The modifier is in `app.aaps.core.ui.compose.clearFocusOnTap`.
+- **Snackbar pattern (Compose)** - `LocalSnackbarHostState` exists for legacy reasons but is an
+  anti-pattern (hidden dependency, was silently failing before we fixed the default to `error()`).
+  **Do not add new `LocalSnackbarHostState.current` consumers.** Prefer either:
+    1. **Event hoisting from ViewModel / utility class** (preferred for non-Composables):
+       ```kotlin
+       // In ViewModel / domain class
+       private val _snackbarEvents = MutableSharedFlow<String>()
+       val snackbarEvents = _snackbarEvents.asSharedFlow()
+
+       // In the Composable
+       LaunchedEffect(Unit) {
+           viewModel.snackbarEvents.collect { snackbarHostState.showSnackbar(it) }
+       }
+       ```
+    2. **Parameter passing** (for child composables that need to snack):
+       ```kotlin
+       fun MyScreen(onShowMessage: (String) -> Unit) { ... }
+       ```
+  Existing `LocalSnackbarHostState.current` usages can stay as-is until touched for other reasons —
+  no forced migration. Only when refactoring a file anyway, move toward the preferred patterns.
+  **Note for Toast→Snackbar migrations:** services, workers, and background plugins cannot render
+  snackbars (no active Compose tree). For those, use Android Notifications for important messages,
+  keep Toast as low-priority fallback, or drop the message entirely if non-critical.
 - **Avoid adding new inter-module (project) dependencies** - Adding
   `implementation(project(":other:module"))`
   between modules can significantly slow down compilation time. Always discuss before adding these.
@@ -164,6 +223,19 @@
 - If an approach requires more than 3 workarounds: **step back and reconsider the approach**
 - If you realize you're about to repeat a mistake from memory: **stop and follow the correct pattern
   **
+
+## On-Device Testing (ONLY on explicit request)
+
+Default stays **"Never install app automatically"** — only build / install / drive devices when the
+user explicitly asks. That request overrides the no-install rule; `connectedAndroidTest` still needs
+its own permission (it wipes the app). When asked:
+
+- Master runs the `full` flavor, a client runs an `aapsclient` flavor — build the needed APK(s) and
+  `adb install -r` (keep data; **never uninstall/wipe** the setup). Find devices via `adb devices -l`.
+- Drive the UI with **`uiautomator`** (dump hierarchy → tap by element `bounds`), not screenshots.
+- Verify behaviour from **`logcat`** (clear before the action, dump after, grep the relevant markers).
+- Use redirect-not-pipe for any gradle build/test so the real exit code shows (see caveat above).
+- Ask connected devices are test devices.
 
 ## Project Info
 

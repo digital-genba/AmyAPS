@@ -278,7 +278,7 @@ internal fun roundToStep(value: Double, step: Double): Double {
  * Speed increases progressively the longer the button is held.
  */
 @Composable
-internal fun RepeatingIconButton(
+fun RepeatingIconButton(
     onClick: () -> Unit,
     enabled: Boolean,
     modifier: Modifier = Modifier,
@@ -324,6 +324,7 @@ internal fun RepeatingIconButton(
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun SliderWithButtonsPreview() {
@@ -337,6 +338,7 @@ private fun SliderWithButtonsPreview() {
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun SliderWithButtonsValuePreview() {
@@ -353,6 +355,7 @@ private fun SliderWithButtonsValuePreview() {
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun SliderWithButtonsIntPreview() {
@@ -369,6 +372,7 @@ private fun SliderWithButtonsIntPreview() {
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun SliderWithButtonsNonLinearPreview() {

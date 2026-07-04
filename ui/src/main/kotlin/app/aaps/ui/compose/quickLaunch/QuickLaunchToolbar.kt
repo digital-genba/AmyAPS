@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TooltipAnchorPosition
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
@@ -34,6 +35,13 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import app.aaps.core.ui.compose.AapsTheme
+import app.aaps.core.ui.compose.icons.IcBolus
+import app.aaps.core.ui.compose.icons.IcCarbs
+import app.aaps.core.ui.compose.icons.IcTtActivity
+import app.aaps.core.ui.compose.icons.IcTtEatingSoon
+import app.aaps.core.ui.compose.icons.IcTtHypo
+import app.aaps.core.ui.compose.navigation.ElementType
 import app.aaps.core.ui.compose.navigation.color
 
 @Immutable
@@ -91,6 +99,26 @@ fun QuickLaunchToolbar(
     }
 }
 
+@Composable
+internal fun resolveItemColor(item: ResolvedQuickLaunchItem): androidx.compose.ui.graphics.Color {
+    val action = item.action
+    if (action is QuickLaunchAction.QuickWizardAction) return when (item.icon) {
+        IcBolus -> ElementType.INSULIN.color()
+        IcCarbs -> ElementType.CARBS.color()
+        else    -> ElementType.QUICK_WIZARD.color()
+    }
+    if (action is QuickLaunchAction.TempTargetPreset) {
+        val colors = AapsTheme.generalColors
+        return when (item.icon) {
+            IcTtActivity   -> colors.ttActivity
+            IcTtEatingSoon -> colors.ttEatingSoon
+            IcTtHypo       -> colors.ttHypoglycemia
+            else            -> colors.ttCustom
+        }
+    }
+    return action.elementType?.color() ?: MaterialTheme.colorScheme.primary
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ToolbarIconButton(
@@ -98,7 +126,7 @@ private fun ToolbarIconButton(
     onActionClick: (QuickLaunchAction) -> Unit
 ) {
     TooltipBox(
-        positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
         tooltip = {
             PlainTooltip {
                 if (item.description != null) {
@@ -122,7 +150,7 @@ private fun ToolbarIconButton(
             Icon(
                 imageVector = item.icon,
                 contentDescription = item.label,
-                tint = item.action.elementType?.color() ?: MaterialTheme.colorScheme.primary,
+                tint = resolveItemColor(item),
                 modifier = Modifier.size(24.dp)
             )
         }
@@ -170,7 +198,7 @@ private fun OverflowMenuButton(
                         Icon(
                             imageVector = item.icon,
                             contentDescription = null,
-                            tint = item.action.elementType?.color() ?: MaterialTheme.colorScheme.primary,
+                            tint = resolveItemColor(item),
                             modifier = Modifier.size(24.dp)
                         )
                     },

@@ -49,9 +49,7 @@ import app.aaps.core.ui.compose.AapsCard
 import app.aaps.core.ui.compose.AapsTheme
 import app.aaps.core.ui.compose.LocalDateUtil
 import app.aaps.core.ui.compose.ToolbarConfig
-import app.aaps.core.ui.compose.dialogs.AapsSnackbarHost
 import app.aaps.core.ui.compose.dialogs.OkCancelDialog
-import app.aaps.core.ui.compose.icons.IcSmb
 import app.aaps.core.ui.compose.icons.Ns
 import app.aaps.core.ui.compose.icons.Pump
 import app.aaps.core.ui.compose.navigation.ElementType
@@ -166,12 +164,6 @@ fun BolusCarbsScreen(
                 )
             }
 
-            // Error display
-            AapsSnackbarHost(
-                message = uiState.snackbarMessage,
-                onDismiss = { viewModel.clearSnackbar() },
-                modifier = Modifier.align(Alignment.BottomCenter)
-            )
         }
     }
 }
@@ -335,32 +327,17 @@ private fun MealLinkItem(
 
                         Box(modifier = Modifier.weight(1f))
 
-                        // Bolus type
-                        when (bolus.type) {
-                            BS.Type.SMB     -> {
-                                Icon(
-                                    imageVector = IcSmb,
-                                    contentDescription = stringResource(app.aaps.core.ui.R.string.smb_shortname),
-                                    modifier = Modifier.size(21.dp)
-                                )
-                            }
-
-                            BS.Type.NORMAL  -> {
-                                Icon(
-                                    imageVector = ElementType.CARBS.icon(),
-                                    contentDescription = stringResource(app.aaps.core.ui.R.string.careportal_mealbolus),
-                                    modifier = Modifier.size(21.dp)
-                                )
-                            }
-
-                            BS.Type.PRIMING -> {
-                                Icon(
-                                    imageVector = ElementType.FILL.icon(),
-                                    contentDescription = stringResource(app.aaps.core.ui.R.string.prime_fill),
-                                    modifier = Modifier.size(21.dp)
-                                )
-                            }
-                        }
+                        // Bolus type — pre-migration text label (the legacy view showed "SMB" / "Meal Bolus" /
+                        // "Prime/Fill" here; a carbs icon on a normal/correction bolus was misleading).
+                        Text(
+                            text = when (bolus.type) {
+                                BS.Type.SMB     -> stringResource(app.aaps.core.ui.R.string.smb_shortname)
+                                BS.Type.NORMAL  -> stringResource(app.aaps.core.ui.R.string.careportal_mealbolus)
+                                BS.Type.PRIMING -> stringResource(app.aaps.core.ui.R.string.prime_fill)
+                            },
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
 
                         if (bolus.ids.nightscoutId != null) {
                             Icon(
@@ -425,7 +402,7 @@ private fun MealLinkItem(
                         )
 
                         Text(
-                            text = rh.gs(app.aaps.core.objects.R.string.format_carbs, carbs.amount.toInt()),
+                            text = rh.gs(app.aaps.core.ui.R.string.format_carbs, carbs.amount.toInt()),
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold
                         )

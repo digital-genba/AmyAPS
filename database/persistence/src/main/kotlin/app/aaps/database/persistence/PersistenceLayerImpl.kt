@@ -3,6 +3,7 @@ package app.aaps.database.persistence
 import app.aaps.core.data.model.BCR
 import app.aaps.core.data.model.BS
 import app.aaps.core.data.model.CA
+import app.aaps.core.data.model.CAL
 import app.aaps.core.data.model.DS
 import app.aaps.core.data.model.EB
 import app.aaps.core.data.model.EPS
@@ -14,6 +15,7 @@ import app.aaps.core.data.model.NE
 import app.aaps.core.data.model.PS
 import app.aaps.core.data.model.RM
 import app.aaps.core.data.model.SC
+import app.aaps.core.data.model.SourceSensor
 import app.aaps.core.data.model.TB
 import app.aaps.core.data.model.TDD
 import app.aaps.core.data.model.TE
@@ -25,13 +27,16 @@ import app.aaps.core.data.ue.Sources
 import app.aaps.core.data.ue.ValueWithUnit
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.configuration.Config
+import app.aaps.core.interfaces.db.DatabaseMaintenanceInfo
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.utils.DateUtil
+import app.aaps.core.interfaces.utils.fabric.FabricPrivacy
 import app.aaps.database.AppRepository
 import app.aaps.database.entities.Bolus
 import app.aaps.database.entities.BolusCalculatorResult
+import app.aaps.database.entities.CalibrationEntry
 import app.aaps.database.entities.Carbs
 import app.aaps.database.entities.DeviceStatus
 import app.aaps.database.entities.EffectiveProfileSwitch
@@ -50,6 +55,9 @@ import app.aaps.database.persistence.converters.fromDb
 import app.aaps.database.persistence.converters.toDb
 import app.aaps.database.transactions.CancelCurrentTemporaryRunningModeIfAnyTransaction
 import app.aaps.database.transactions.CancelCurrentTemporaryTargetIfAnyTransaction
+import app.aaps.database.transactions.CancelProfileSwitchTransaction
+import app.aaps.database.transactions.CancelRunningModeTransaction
+import app.aaps.database.transactions.CancelTherapyEventTransaction
 import app.aaps.database.transactions.CgmSourceTransaction
 import app.aaps.database.transactions.CutCarbsTransaction
 import app.aaps.database.transactions.InsertAndCancelCurrentTemporaryTargetTransaction
@@ -60,16 +68,19 @@ import app.aaps.database.transactions.InsertOrUpdateApsResultTransaction
 import app.aaps.database.transactions.InsertOrUpdateBolusCalculatorResultTransaction
 import app.aaps.database.transactions.InsertOrUpdateBolusTransaction
 import app.aaps.database.transactions.InsertOrUpdateCachedTotalDailyDoseTransaction
+import app.aaps.database.transactions.InsertOrUpdateCalibrationEntryTransaction
 import app.aaps.database.transactions.InsertOrUpdateCarbsTransaction
 import app.aaps.database.transactions.InsertOrUpdateEffectiveProfileSwitchTransaction
-import app.aaps.database.transactions.InsertOrUpdateHeartRateTransaction
+import app.aaps.database.transactions.InsertOrUpdateFoodTransaction
+import app.aaps.database.transactions.InsertOrUpdateHeartRatesTransaction
 import app.aaps.database.transactions.InsertOrUpdateProfileSwitchTransaction
 import app.aaps.database.transactions.InsertOrUpdateRunningModeTransaction
-import app.aaps.database.transactions.InsertOrUpdateStepsCountTransaction
+import app.aaps.database.transactions.InsertOrUpdateStepsCountsTransaction
 import app.aaps.database.transactions.InsertOrUpdateTherapyEventTransaction
 import app.aaps.database.transactions.InsertTemporaryBasalWithTempIdTransaction
 import app.aaps.database.transactions.InvalidateBolusCalculatorResultTransaction
 import app.aaps.database.transactions.InvalidateBolusTransaction
+import app.aaps.database.transactions.InvalidateCalibrationEntryTransaction
 import app.aaps.database.transactions.InvalidateCarbsTransaction
 import app.aaps.database.transactions.InvalidateEffectiveProfileSwitchTransaction
 import app.aaps.database.transactions.InvalidateExtendedBolusTransaction
@@ -86,6 +97,7 @@ import app.aaps.database.transactions.InvalidateTherapyEventsWithNoteTransaction
 import app.aaps.database.transactions.SyncBolusWithTempIdTransaction
 import app.aaps.database.transactions.SyncNsBolusCalculatorResultTransaction
 import app.aaps.database.transactions.SyncNsBolusTransaction
+import app.aaps.database.transactions.SyncNsCalibrationEntryTransaction
 import app.aaps.database.transactions.SyncNsCarbsTransaction
 import app.aaps.database.transactions.SyncNsEffectiveProfileSwitchTransaction
 import app.aaps.database.transactions.SyncNsExtendedBolusTransaction
@@ -104,6 +116,7 @@ import app.aaps.database.transactions.SyncPumpTotalDailyDoseTransaction
 import app.aaps.database.transactions.SyncTemporaryBasalWithTempIdTransaction
 import app.aaps.database.transactions.UpdateNsIdBolusCalculatorResultTransaction
 import app.aaps.database.transactions.UpdateNsIdBolusTransaction
+import app.aaps.database.transactions.UpdateNsIdCalibrationEntryTransaction
 import app.aaps.database.transactions.UpdateNsIdCarbsTransaction
 import app.aaps.database.transactions.UpdateNsIdDeviceStatusTransaction
 import app.aaps.database.transactions.UpdateNsIdEffectiveProfileSwitchTransaction
@@ -118,8 +131,6 @@ import app.aaps.database.transactions.UpdateNsIdTherapyEventTransaction
 import app.aaps.database.transactions.UserEntryTransaction
 import app.aaps.database.transactions.VersionChangeTransaction
 import dagger.Reusable
-import io.reactivex.rxjava3.core.Completable
-import io.reactivex.rxjava3.disposables.CompositeDisposable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -138,10 +149,10 @@ class PersistenceLayerImpl @Inject constructor(
     private val repository: AppRepository,
     private val dateUtil: DateUtil,
     private val config: Config,
-    private val apsResultProvider: Provider<APSResult>
+    private val apsResultProvider: Provider<APSResult>,
+    private val fabricPrivacy: FabricPrivacy
 ) : PersistenceLayer {
 
-    private val compositeDisposable = CompositeDisposable()
     private suspend fun log(entries: List<UE>) {
         if (config.AAPSCLIENT.not())
             if (entries.isNotEmpty()) {
@@ -151,9 +162,19 @@ class PersistenceLayerImpl @Inject constructor(
     }
 
     override fun clearDatabases() = repository.clearDatabases()
+    override val databaseClearedFlow: Flow<Unit> get() = repository.databaseClearedFlow()
     override fun clearApsResults() = repository.clearApsResults()
     override suspend fun cleanupDatabase(keepDays: Long, deleteTrackedChanges: Boolean): String = withContext(Dispatchers.IO) {
         repository.cleanupDatabase(keepDays, deleteTrackedChanges)
+    }
+
+    override suspend fun vacuumDatabase() = withContext(Dispatchers.IO) {
+        repository.vacuumDatabase()
+    }
+
+    override suspend fun databaseMaintenanceInfo(retentionDays: Long): DatabaseMaintenanceInfo = withContext(Dispatchers.IO) {
+        val raw = repository.databaseMaintenanceInfo(retentionDays)
+        DatabaseMaintenanceInfo(raw.dbSizeBytes, raw.availableBytes, raw.totalRows, raw.deletableRows, raw.changeRows, raw.report)
     }
 
     // Flow-based change observation
@@ -189,6 +210,9 @@ class PersistenceLayerImpl @Inject constructor(
                 .map { list -> list.map { it.fromDb() } }
 
             GV::class.java  -> repository.changesOfType<GlucoseValue>()
+                .map { list -> list.map { it.fromDb() } }
+
+            CAL::class.java -> repository.changesOfType<CalibrationEntry>()
                 .map { list -> list.map { it.fromDb() } }
 
             UE::class.java  -> repository.changesOfType<UserEntry>()
@@ -321,11 +345,6 @@ class PersistenceLayerImpl @Inject constructor(
             aapsLogger.error(LTag.DATABASE, "Error while saving Bolus", e)
             throw e
         }
-    }
-
-    override suspend fun updateBolusNoLogging(bolus: BS): Unit = withContext(Dispatchers.IO) {
-        repository.runTransactionForResultSuspend(InsertOrUpdateBolusTransaction(bolus.toDb()))
-        Unit
     }
 
     override suspend fun insertBolusWithTempId(bolus: BS): PersistenceLayer.TransactionResult<BS> = withContext(Dispatchers.IO) {
@@ -533,7 +552,10 @@ class PersistenceLayerImpl @Inject constructor(
                 aapsLogger.debug(LTag.DATABASE, "Inserted Carbs $it")
                 transactionResult.updated.add(it.fromDb())
             }
-            log(ueValues)
+            // Skip the user-entry for an internal (command-queue) carbs persist: the queue uses
+            // Sources.Database and the originating caller (executor / SMS / wizard) already logged the
+            // real-source user entry — a second Database-sourced row would just duplicate it in the log.
+            if (source != Sources.Database) log(ueValues)
             transactionResult
         } catch (e: Exception) {
             aapsLogger.error(LTag.DATABASE, "Error while saving Carbs", e)
@@ -876,6 +898,102 @@ class PersistenceLayerImpl @Inject constructor(
         }
     }
 
+    // CALIBRATION ENTRIES
+    override suspend fun getLastCalibrationEntryId(): Long? = withContext(Dispatchers.IO) {
+        repository.getLastCalibrationEntryId()
+    }
+
+    override suspend fun getNextSyncElementCalibrationEntry(id: Long): Pair<CAL, CAL>? = withContext(Dispatchers.IO) {
+        repository.getNextSyncElementCalibrationEntry(id)?.let { pair -> Pair(pair.first.fromDb(), pair.second.fromDb()) }
+    }
+
+    override suspend fun getValidCalibrationEntriesSince(from: Long): List<CAL> = withContext(Dispatchers.IO) {
+        repository.getValidCalibrationEntriesSince(from).map { it.fromDb() }
+    }
+
+    override suspend fun getAllValidCalibrationEntries(): List<CAL> = withContext(Dispatchers.IO) {
+        repository.getAllValidCalibrationEntries().map { it.fromDb() }
+    }
+
+    override suspend fun insertOrUpdateCalibrationEntry(calibrationEntry: CAL): PersistenceLayer.TransactionResult<CAL> = withContext(Dispatchers.IO) {
+        try {
+            val result = repository.runTransactionForResultSuspend(InsertOrUpdateCalibrationEntryTransaction(calibrationEntry.toDb()))
+            val transactionResult = PersistenceLayer.TransactionResult<CAL>()
+            result.inserted.forEach {
+                aapsLogger.debug(LTag.DATABASE, "Inserted CalibrationEntry $it")
+                transactionResult.inserted.add(it.fromDb())
+            }
+            result.updated.forEach {
+                aapsLogger.debug(LTag.DATABASE, "Updated CalibrationEntry $it")
+                transactionResult.updated.add(it.fromDb())
+            }
+            transactionResult
+        } catch (e: Exception) {
+            aapsLogger.error(LTag.DATABASE, "Error while saving CalibrationEntry", e)
+            throw e
+        }
+    }
+
+    override suspend fun syncNsCalibrationEntries(calibrationEntries: List<CAL>): PersistenceLayer.TransactionResult<CAL> = withContext(Dispatchers.IO) {
+        try {
+            val result = repository.runTransactionForResultSuspend(SyncNsCalibrationEntryTransaction(calibrationEntries.map { it.toDb() }))
+            val transactionResult = PersistenceLayer.TransactionResult<CAL>()
+            result.inserted.forEach {
+                aapsLogger.debug(LTag.DATABASE, "Inserted CalibrationEntry from NS $it")
+                transactionResult.inserted.add(it.fromDb())
+            }
+            result.updated.forEach {
+                aapsLogger.debug(LTag.DATABASE, "Updated CalibrationEntry from NS $it")
+                transactionResult.updated.add(it.fromDb())
+            }
+            result.invalidated.forEach {
+                aapsLogger.debug(LTag.DATABASE, "Invalidated CalibrationEntry from NS $it")
+                transactionResult.invalidated.add(it.fromDb())
+            }
+            result.updatedNsId.forEach {
+                aapsLogger.debug(LTag.DATABASE, "Updated nsId of CalibrationEntry from NS $it")
+                transactionResult.updatedNsId.add(it.fromDb())
+            }
+            transactionResult
+        } catch (e: Exception) {
+            aapsLogger.error(LTag.DATABASE, "Error while syncing CalibrationEntry from NS", e)
+            throw e
+        }
+    }
+
+    override suspend fun invalidateCalibrationEntry(id: Long, action: Action, source: Sources, note: String?, listValues: List<ValueWithUnit>): PersistenceLayer.TransactionResult<CAL> = withContext(Dispatchers.IO) {
+        try {
+            val result = repository.runTransactionForResultSuspend(InvalidateCalibrationEntryTransaction(id))
+            val transactionResult = PersistenceLayer.TransactionResult<CAL>()
+            val ueValues = mutableListOf<UE>()
+            result.invalidated.forEach {
+                aapsLogger.debug(LTag.DATABASE, "Invalidated CalibrationEntry from ${source.name} $it")
+                transactionResult.invalidated.add(it.fromDb())
+                ueValues.add(UE(timestamp = dateUtil.now(), action = action, source = source, note = note ?: "", values = listValues))
+            }
+            log(ueValues)
+            transactionResult
+        } catch (e: Exception) {
+            aapsLogger.error(LTag.DATABASE, "Error while invalidating CalibrationEntry", e)
+            throw e
+        }
+    }
+
+    override suspend fun updateCalibrationEntriesNsIds(calibrationEntries: List<CAL>): PersistenceLayer.TransactionResult<CAL> = withContext(Dispatchers.IO) {
+        try {
+            val result = repository.runTransactionForResultSuspend(UpdateNsIdCalibrationEntryTransaction(calibrationEntries.map { it.toDb() }))
+            val transactionResult = PersistenceLayer.TransactionResult<CAL>()
+            result.updatedNsId.forEach {
+                aapsLogger.debug(LTag.DATABASE, "Updated nsId of CalibrationEntry $it")
+                transactionResult.updatedNsId.add(it.fromDb())
+            }
+            transactionResult
+        } catch (e: Exception) {
+            aapsLogger.error(LTag.DATABASE, "Updated nsId of CalibrationEntry failed", e)
+            throw e
+        }
+    }
+
     override suspend fun getOldestEffectiveProfileSwitch(): EPS? = withContext(Dispatchers.IO) {
         repository.getOldestEffectiveProfileSwitchRecord()?.fromDb()
     }
@@ -977,11 +1095,6 @@ class PersistenceLayerImpl @Inject constructor(
             aapsLogger.error(LTag.DATABASE, "Error while inserting EffectiveProfileSwitch", e)
             throw e
         }
-    }
-
-    override suspend fun updateEffectiveProfileSwitchNoLogging(effectiveProfileSwitch: EPS): Unit = withContext(Dispatchers.IO) {
-        repository.runTransactionForResultSuspend(InsertOrUpdateEffectiveProfileSwitchTransaction(effectiveProfileSwitch.toDb()))
-        Unit
     }
 
     override suspend fun invalidateEffectiveProfileSwitch(id: Long, action: Action, source: Sources, note: String?, listValues: List<ValueWithUnit>): PersistenceLayer.TransactionResult<EPS> = withContext(Dispatchers.IO) {
@@ -1160,9 +1273,27 @@ class PersistenceLayerImpl @Inject constructor(
         }
     }
 
+    override suspend fun cancelRunningMode(id: Long, timestamp: Long, action: Action, source: Sources, note: String?, listValues: List<ValueWithUnit>): PersistenceLayer.TransactionResult<RM> = withContext(Dispatchers.IO) {
+        try {
+            val result = repository.runTransactionForResultSuspend(CancelRunningModeTransaction(id, timestamp))
+            val transactionResult = PersistenceLayer.TransactionResult<RM>()
+            val ueValues = mutableListOf<UE>()
+            result.updated.forEach {
+                aapsLogger.debug(LTag.DATABASE, "Updated RunningMode from ${source.name} $it")
+                transactionResult.updated.add(it.fromDb())
+                ueValues.add(UE(timestamp = dateUtil.now(), action = action, source = source, note = note ?: "", values = listValues))
+            }
+            log(ueValues)
+            transactionResult
+        } catch (e: Exception) {
+            aapsLogger.error(LTag.DATABASE, "Error while canceling RunningMode by id", e)
+            throw e
+        }
+    }
+
     override suspend fun syncNsRunningModes(runningModes: List<RM>, doLog: Boolean): PersistenceLayer.TransactionResult<RM> = withContext(Dispatchers.IO) {
         try {
-            val result = repository.runTransactionForResultSuspend(SyncNsRunningModeTransaction(runningModes.map { it.toDb() }))
+            val result = repository.runTransactionForResultSuspend(SyncNsRunningModeTransaction(runningModes.map { it.toDb() }, config.AAPSCLIENT))
             val transactionResult = PersistenceLayer.TransactionResult<RM>()
             val ueValues = mutableListOf<UE>()
             result.inserted.forEach {
@@ -1294,11 +1425,6 @@ class PersistenceLayerImpl @Inject constructor(
         }
     }
 
-    override suspend fun updateProfileSwitchNoLogging(profileSwitch: PS): Unit = withContext(Dispatchers.IO) {
-        repository.runTransactionForResultSuspend(InsertOrUpdateProfileSwitchTransaction(profileSwitch.toDb()))
-        Unit
-    }
-
     override suspend fun invalidateProfileSwitch(id: Long, action: Action, source: Sources, note: String?, listValues: List<ValueWithUnit>): PersistenceLayer.TransactionResult<PS> = withContext(Dispatchers.IO) {
         try {
             val result = repository.runTransactionForResultSuspend(InvalidateProfileSwitchTransaction(id))
@@ -1313,6 +1439,24 @@ class PersistenceLayerImpl @Inject constructor(
             transactionResult
         } catch (e: Exception) {
             aapsLogger.error(LTag.DATABASE, "Error while invalidating ProfileSwitch", e)
+            throw e
+        }
+    }
+
+    override suspend fun cancelProfileSwitch(id: Long, timestamp: Long, action: Action, source: Sources, note: String?, listValues: List<ValueWithUnit>): PersistenceLayer.TransactionResult<PS> = withContext(Dispatchers.IO) {
+        try {
+            val result = repository.runTransactionForResultSuspend(CancelProfileSwitchTransaction(id, timestamp))
+            val transactionResult = PersistenceLayer.TransactionResult<PS>()
+            val ueValues = mutableListOf<UE>()
+            result.updated.forEach {
+                aapsLogger.debug(LTag.DATABASE, "Updated ProfileSwitch from ${source.name} $it")
+                transactionResult.updated.add(it.fromDb())
+                ueValues.add(UE(timestamp = dateUtil.now(), action = action, source = source, note = note ?: "", values = listValues))
+            }
+            log(ueValues)
+            transactionResult
+        } catch (e: Exception) {
+            aapsLogger.error(LTag.DATABASE, "Error while canceling ProfileSwitch", e)
             throw e
         }
     }
@@ -1349,6 +1493,10 @@ class PersistenceLayerImpl @Inject constructor(
                     )
                 aapsLogger.debug(LTag.DATABASE, "Invalidated ProfileSwitch $it")
                 transactionResult.invalidated.add(it.fromDb())
+            }
+            result.updatedDuration.forEach {
+                aapsLogger.debug(LTag.DATABASE, "Updated duration ProfileSwitch $it")
+                transactionResult.updatedDuration.add(it.fromDb())
             }
             result.updatedNsId.forEach {
                 aapsLogger.debug(LTag.DATABASE, "Updated nsId ProfileSwitch $it")
@@ -2009,17 +2157,35 @@ class PersistenceLayerImpl @Inject constructor(
         }
     }
 
+    override suspend fun cancelTherapyEvent(id: Long, timestamp: Long, action: Action, source: Sources, note: String?, listValues: List<ValueWithUnit>)
+        : PersistenceLayer.TransactionResult<TE> = withContext(Dispatchers.IO) {
+        try {
+            val result = repository.runTransactionForResultSuspend(CancelTherapyEventTransaction(id, timestamp))
+            val transactionResult = PersistenceLayer.TransactionResult<TE>()
+            val ueValues = mutableListOf<UE>()
+            result.updated.forEach {
+                aapsLogger.debug(LTag.DATABASE, "Updated TherapyEvent from ${source.name} $it")
+                transactionResult.updated.add(it.fromDb())
+                ueValues.add(UE(timestamp = dateUtil.now(), action = action, source = source, note = note ?: "", values = listValues))
+            }
+            log(ueValues)
+            transactionResult
+        } catch (e: Exception) {
+            aapsLogger.error(LTag.DATABASE, "Error while canceling TherapyEvent", e)
+            throw e
+        }
+    }
+
     override suspend fun invalidateTherapyEventsWithNote(note: String, action: Action, source: Sources): PersistenceLayer.TransactionResult<TE> = withContext(Dispatchers.IO) {
         try {
             val result = repository.runTransactionForResultSuspend(InvalidateTherapyEventsWithNoteTransaction(note))
             val transactionResult = PersistenceLayer.TransactionResult<TE>()
-            val ueValues = mutableListOf<UE>()
             result.invalidated.forEach {
                 aapsLogger.debug(LTag.DATABASE, "Invalidated TherapyEvent from ${source.name} $it")
                 transactionResult.invalidated.add(it.fromDb())
-                ueValues.add(UE(timestamp = dateUtil.now(), action = action, source = source, note = note, values = emptyList()))
             }
-            log(ueValues)
+            if (result.invalidated.isNotEmpty())
+                log(listOf(UE(timestamp = dateUtil.now(), action = action, source = source, note = note, values = emptyList())))
             transactionResult
         } catch (e: Exception) {
             aapsLogger.error(LTag.DATABASE, "Error while invalidating TherapyEvent", e)
@@ -2144,9 +2310,10 @@ class PersistenceLayerImpl @Inject constructor(
         repository.getHeartRatesFromTimeToTime(startTime, endTime).map { it.fromDb() }
     }
 
-    override suspend fun insertOrUpdateHeartRate(heartRate: HR): PersistenceLayer.TransactionResult<HR> = withContext(Dispatchers.IO) {
+    override suspend fun insertOrUpdateHeartRates(heartRates: List<HR>): PersistenceLayer.TransactionResult<HR> = withContext(Dispatchers.IO) {
+        if (heartRates.isEmpty()) return@withContext PersistenceLayer.TransactionResult<HR>()
         try {
-            val result = repository.runTransactionForResultSuspend(InsertOrUpdateHeartRateTransaction(heartRate.toDb()))
+            val result = repository.runTransactionForResultSuspend(InsertOrUpdateHeartRatesTransaction(heartRates.map { it.toDb() }))
             val transactionResult = PersistenceLayer.TransactionResult<HR>()
             result.inserted.forEach {
                 aapsLogger.debug(LTag.DATABASE, "Inserted HeartRate $it")
@@ -2158,7 +2325,7 @@ class PersistenceLayerImpl @Inject constructor(
             }
             transactionResult
         } catch (e: Exception) {
-            aapsLogger.error(LTag.DATABASE, "Error while saving HeartRate", e)
+            aapsLogger.error(LTag.DATABASE, "Error while saving HeartRate batch", e)
             throw e
         }
     }
@@ -2173,6 +2340,25 @@ class PersistenceLayerImpl @Inject constructor(
 
     override suspend fun getLastFoodId(): Long? = withContext(Dispatchers.IO) {
         repository.getLastFoodId()
+    }
+
+    override suspend fun insertOrUpdateFood(food: FD): PersistenceLayer.TransactionResult<FD> = withContext(Dispatchers.IO) {
+        try {
+            val result = repository.runTransactionForResultSuspend(InsertOrUpdateFoodTransaction(food.toDb()))
+            val transactionResult = PersistenceLayer.TransactionResult<FD>()
+            result.inserted.forEach {
+                aapsLogger.debug(LTag.DATABASE, "Inserted Food $it")
+                transactionResult.inserted.add(it.fromDb())
+            }
+            result.updated.forEach {
+                aapsLogger.debug(LTag.DATABASE, "Updated Food $it")
+                transactionResult.updated.add(it.fromDb())
+            }
+            transactionResult
+        } catch (e: Exception) {
+            aapsLogger.error(LTag.DATABASE, "Error while inserting/updating Food", e)
+            throw e
+        }
     }
 
     override suspend fun invalidateFood(id: Long, action: Action, source: Sources): PersistenceLayer.TransactionResult<FD> = withContext(Dispatchers.IO) {
@@ -2341,9 +2527,10 @@ class PersistenceLayerImpl @Inject constructor(
         repository.getLastStepsCountFromTimeToTime(startTime, endTime)?.fromDb()
     }
 
-    override suspend fun insertOrUpdateStepsCount(stepsCount: SC): PersistenceLayer.TransactionResult<SC> = withContext(Dispatchers.IO) {
+    override suspend fun insertOrUpdateStepsCounts(stepsCounts: List<SC>): PersistenceLayer.TransactionResult<SC> = withContext(Dispatchers.IO) {
+        if (stepsCounts.isEmpty()) return@withContext PersistenceLayer.TransactionResult<SC>()
         try {
-            val result = repository.runTransactionForResultSuspend(InsertOrUpdateStepsCountTransaction(stepsCount.toDb()))
+            val result = repository.runTransactionForResultSuspend(InsertOrUpdateStepsCountsTransaction(stepsCounts.map { it.toDb() }))
             val transactionResult = PersistenceLayer.TransactionResult<SC>()
             result.inserted.forEach {
                 aapsLogger.debug(LTag.DATABASE, "Inserted StepsCount $it")
@@ -2355,14 +2542,15 @@ class PersistenceLayerImpl @Inject constructor(
             }
             transactionResult
         } catch (e: Exception) {
-            aapsLogger.error(LTag.DATABASE, "Error while saving StepsCount $e")
+            aapsLogger.error(LTag.DATABASE, "Error while saving StepsCount batch $e")
             throw e
         }
     }
 
     // VersionChange
-    override fun insertVersionChangeIfChanged(versionName: String, versionCode: Int, gitRemote: String?, commitHash: String?): Completable =
-        repository.runTransaction(VersionChangeTransaction(versionName, versionCode, gitRemote, commitHash))
+    override suspend fun insertVersionChangeIfChanged(versionName: String, versionCode: Int, gitRemote: String?, commitHash: String?) = withContext(Dispatchers.IO) {
+        repository.runTransactionSuspend(VersionChangeTransaction(versionName, versionCode, gitRemote, commitHash))
+    }
 
     override suspend fun collectNewEntriesSince(since: Long, until: Long, limit: Int, offset: Int): NE = withContext(Dispatchers.IO) {
         repository.collectNewEntriesSince(since, until, limit, offset).fromDb()
@@ -2376,8 +2564,20 @@ class PersistenceLayerImpl @Inject constructor(
         repository.getApsResults(start, end).map { it.fromDb(apsResultProvider) }
     }
 
+    private val nonFiniteFieldRegex = Regex("(\\w+)=(NaN|Infinity|-Infinity)\\b")
+
+    private fun reportNonFiniteRtFields(apsResult: APSResult) {
+        val tokens = nonFiniteFieldRegex.findAll(apsResult.rawData().toString()).map { it.value }.toList()
+        if (tokens.isEmpty()) return
+        val msg = "APSResult RT non-finite algorithm=${apsResult.algorithm} ts=${apsResult.date} fields=$tokens"
+        aapsLogger.warn(LTag.APS, msg)
+        fabricPrivacy.logMessage(msg)
+        fabricPrivacy.logException(IllegalStateException(msg))
+    }
+
     override suspend fun insertOrUpdateApsResult(apsResult: APSResult): PersistenceLayer.TransactionResult<APSResult> = withContext(Dispatchers.IO) {
         try {
+            reportNonFiniteRtFields(apsResult)
             val result = repository.runTransactionForResultSuspend(InsertOrUpdateApsResultTransaction(apsResult.toDb()))
             val transactionResult = PersistenceLayer.TransactionResult<APSResult>()
             result.inserted.forEach {
@@ -2393,5 +2593,13 @@ class PersistenceLayerImpl @Inject constructor(
             aapsLogger.error(LTag.DATABASE, "Error while saving APSResult", e)
             throw e
         }
+    }
+
+    override suspend fun getGlucoseValueByPumpIdAndSource(source: SourceSensor, pumpId: Long): GV? = withContext(Dispatchers.IO) {
+        repository.getGlucoseValueByPumpIdAndSource(source.name, pumpId)?.fromDb()
+    }
+
+    override suspend fun getGlucoseValuesByPumpIdRange(source: SourceSensor, startPumpId: Long, endPumpId: Long): List<GV> = withContext(Dispatchers.IO) {
+        repository.getGlucoseValuesByPumpIdRange(source.name, startPumpId, endPumpId).map { it.fromDb() }
     }
 }

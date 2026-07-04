@@ -6,6 +6,7 @@ import app.aaps.core.data.time.T
 import app.aaps.core.data.ue.Action
 import app.aaps.core.data.ue.Sources
 import app.aaps.core.interfaces.aps.Loop
+import app.aaps.core.interfaces.dst.DstHelper
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.notifications.NotificationAction
@@ -36,13 +37,12 @@ class DstHelperPlugin @Inject constructor(
 ) : PluginBaseWithPreferences(
     pluginDescription = PluginDescription()
         .mainType(PluginType.GENERAL)
-        .neverVisible(true)
         .alwaysEnabled(true)
         .showInList { false }
         .pluginName(R.string.dst_plugin_name),
     ownPreferences = listOf(DstHelperLongKey::class.java),
     aapsLogger, rh, preferences
-) {
+), DstHelper {
 
     companion object {
 
@@ -51,7 +51,7 @@ class DstHelperPlugin @Inject constructor(
     }
 
     //Return false if time to DST change happened in the last 3 hours.
-    fun dstCheck() {
+    override fun dstCheck() {
         val pump = activePlugin.activePump
         if (pump.canHandleDST()) return
         val cal = Calendar.getInstance()
@@ -68,9 +68,14 @@ class DstHelperPlugin @Inject constructor(
             }
         }
         if (wasDST(cal)) {
-            if (!loop.runningMode.isSuspended()) {
+            // dstCheck() is invoked from KeepAliveWorker on a background scope; the file
+            // already uses runBlocking for profileFunction. Keeping the same pattern here.
+            val mode = runBlocking { loop.runningMode() }
+            if (!mode.pausesLoopExecution()) {
                 val profile = runBlocking { profileFunction.getProfile() } ?: return
-                loop.handleRunningModeChange(newRM = RM.Mode.SUSPENDED_BY_DST, durationInMinutes = T.hours((-DISABLE_TIME_FRAME_HOURS).toLong()).mins().toInt(), action = Action.SUSPEND, source = Sources.Aaps, profile = profile)
+                runBlocking {
+                    loop.handleRunningModeChange(newRM = RM.Mode.SUSPENDED_BY_DST, durationInMinutes = T.hours((-DISABLE_TIME_FRAME_HOURS).toLong()).mins().toInt(), action = Action.SUSPEND, source = Sources.Aaps, profile = profile)
+                }
                 val snoozedTo: Long = preferences.get(DstHelperLongKey.SnoozeLoopDisabled)
                 if (snoozedTo == 0L || System.currentTimeMillis() > snoozedTo) {
                     notificationManager.post(

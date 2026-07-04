@@ -1,5 +1,6 @@
 package app.aaps.core.ui.compose.pump
 
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.vector.ImageVector
 import app.aaps.core.ui.compose.StatusLevel
@@ -11,7 +12,7 @@ import app.aaps.core.ui.compose.StatusLevel
 @Immutable
 data class PumpOverviewUiState(
     val statusBanner: StatusBanner? = null,
-    val infoRows: List<PumpInfoRow> = emptyList(),
+    val infoRows: List<PumpInfoInterface> = emptyList(),
     val primaryActions: List<PumpAction> = emptyList(),
     val managementActions: List<PumpAction> = emptyList(),
     val queueStatus: String? = null
@@ -27,6 +28,11 @@ data class StatusBanner(
 )
 
 /**
+ * Interface for PumpInfo objects (Row, Group)
+ */
+interface PumpInfoInterface
+
+/**
  * A single label:value row in the pump info section.
  */
 @Immutable
@@ -35,7 +41,22 @@ data class PumpInfoRow(
     val value: String,
     val level: StatusLevel = StatusLevel.UNSPECIFIED,
     val visible: Boolean = true
-)
+): PumpInfoInterface
+
+/**
+ * Group for PumpInfoRow. Group items are displayed together, with divider only at end of group (instead of each item)
+ */
+data class PumpInfoGroup(
+    var list: MutableList<PumpInfoRow> = mutableListOf()
+): PumpInfoInterface
+
+/**
+ * PumpInfoRow with custom compose content.
+ */
+interface PumpInfoComposable: PumpInfoInterface {
+    fun composableContent(): @Composable () -> Unit
+    fun hasDividerOnEnd(): Boolean = false
+}
 
 /**
  * Action category for separating primary operational actions from device management actions.
@@ -52,7 +73,6 @@ enum class ActionCategory {
 @Immutable
 data class PumpAction(
     val label: String,
-    val iconRes: Int = 0,
     val icon: ImageVector? = null,
     val category: ActionCategory = ActionCategory.PRIMARY,
     val enabled: Boolean = true,

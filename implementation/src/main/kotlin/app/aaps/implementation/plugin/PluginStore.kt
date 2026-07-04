@@ -13,23 +13,22 @@ import androidx.core.content.ContextCompat
 import app.aaps.core.data.plugin.PluginType
 import app.aaps.core.interfaces.aps.APS
 import app.aaps.core.interfaces.aps.Sensitivity
+import app.aaps.core.interfaces.calibration.Calibration
 import app.aaps.core.interfaces.configuration.ConfigBuilder
 import app.aaps.core.interfaces.constraints.Objectives
 import app.aaps.core.interfaces.constraints.Safety
 import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
-import app.aaps.core.interfaces.overview.Overview
 import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.plugin.PermissionGroup
+import app.aaps.core.interfaces.plugin.PermissionProvider
 import app.aaps.core.interfaces.plugin.PluginBase
 import app.aaps.core.interfaces.plugin.PluginBaseWithPreferences
-import app.aaps.core.interfaces.profile.ProfileSource
 import app.aaps.core.interfaces.pump.Pump
 import app.aaps.core.interfaces.pump.PumpWithConcentration
 import app.aaps.core.interfaces.smoothing.Smoothing
 import app.aaps.core.interfaces.source.BgSource
-import app.aaps.core.interfaces.sync.NsClient
 import app.aaps.core.interfaces.sync.Sync
 import app.aaps.core.keys.StringKey
 import app.aaps.core.keys.interfaces.Preferences
@@ -42,7 +41,10 @@ import javax.inject.Singleton
 class PluginStore @Inject constructor(
     private val aapsLogger: AAPSLogger,
     private val preferences: Preferences,
-    private val pumpWithConcentration: Lazy<PumpWithConcentration>
+    private val pumpWithConcentration: Lazy<PumpWithConcentration>,
+    // Lazy: a PermissionProvider (e.g. AutomationRuntime) transitively depends on ActivePlugin
+    // (= this PluginStore), so eager injection would form a Dagger dependency cycle.
+    private val permissionProviders: Lazy<Set<@JvmSuppressWildcards PermissionProvider>>
 ) : ActivePlugin {
 
     companion object {
@@ -106,6 +108,7 @@ class PluginStore @Inject constructor(
     private var activeAPSStore: APS? = null
     private var activeSensitivityStore: Sensitivity? = null
     private var activeSmoothingStore: Smoothing? = null
+    private var activeCalibrationStore: Calibration? = null
 
     private fun getDefaultPlugin(type: PluginType): PluginBase {
         for (p in plugins)
@@ -159,7 +162,6 @@ class PluginStore @Inject constructor(
             (activeAPSStore as PluginBase).setPluginEnabled(PluginType.APS, true)
             aapsLogger.debug(LTag.CONFIGBUILDER, "Defaulting APSInterface")
         }
-        setFragmentVisibilities((activeAPSStore as PluginBase).name, pluginsInCategory, PluginType.APS)
 
         // PluginType.SENSITIVITY
         pluginsInCategory = getSpecificPluginsList(PluginType.SENSITIVITY)
@@ -169,7 +171,7 @@ class PluginStore @Inject constructor(
             (activeSensitivityStore as PluginBase).setPluginEnabled(PluginType.SENSITIVITY, true)
             aapsLogger.debug(LTag.CONFIGBUILDER, "Defaulting SensitivityInterface")
         }
-        setFragmentVisibilities((activeSensitivityStore as PluginBase).name, pluginsInCategory, PluginType.SENSITIVITY)
+        activeSensitivityStore = fallbackIfNotVisible(activeSensitivityStore as PluginBase, PluginType.SENSITIVITY) as Sensitivity
 
         // PluginType.SMOOTHING
         pluginsInCategory = getSpecificPluginsList(PluginType.SMOOTHING)
@@ -179,7 +181,15 @@ class PluginStore @Inject constructor(
             (activeSmoothingStore as PluginBase).setPluginEnabled(PluginType.SMOOTHING, true)
             aapsLogger.debug(LTag.CONFIGBUILDER, "Defaulting SmoothingInterface")
         }
-        setFragmentVisibilities((activeSmoothingStore as PluginBase).name, pluginsInCategory, PluginType.SMOOTHING)
+
+        // PluginType.CALIBRATION
+        pluginsInCategory = getSpecificPluginsList(PluginType.CALIBRATION)
+        activeCalibrationStore = getTheOneEnabledInArray(pluginsInCategory, PluginType.CALIBRATION) as Calibration?
+        if (activeCalibrationStore == null) {
+            activeCalibrationStore = getDefaultPlugin(PluginType.CALIBRATION) as Calibration
+            (activeCalibrationStore as PluginBase).setPluginEnabled(PluginType.CALIBRATION, true)
+            aapsLogger.debug(LTag.CONFIGBUILDER, "Defaulting CalibrationInterface")
+        }
 
         // PluginType.BGSOURCE
         pluginsInCategory = getSpecificPluginsList(PluginType.BGSOURCE)
@@ -189,7 +199,6 @@ class PluginStore @Inject constructor(
             (activeBgSourceStore as PluginBase).setPluginEnabled(PluginType.BGSOURCE, true)
             aapsLogger.debug(LTag.CONFIGBUILDER, "Defaulting BgInterface")
         }
-        setFragmentVisibilities((activeBgSourceStore as PluginBase).name, pluginsInCategory, PluginType.BGSOURCE)
 
         // PluginType.PUMP
         pluginsInCategory = getSpecificPluginsList(PluginType.PUMP)
@@ -199,17 +208,25 @@ class PluginStore @Inject constructor(
             (activePumpStore as PluginBase).setPluginEnabled(PluginType.PUMP, true)
             aapsLogger.debug(LTag.CONFIGBUILDER, "Defaulting PumpInterface")
         }
-        setFragmentVisibilities((activePumpStore as PluginBase).name, pluginsInCategory, PluginType.PUMP)
     }
 
-    private fun setFragmentVisibilities(
-        activePluginName: String, pluginsInCategory: ArrayList<PluginBase>,
-        pluginType: PluginType
-    ) {
-        aapsLogger.debug(LTag.CONFIGBUILDER, "Selected interface: $activePluginName")
-        for (p in pluginsInCategory)
-            if (p.name != activePluginName)
-                p.setFragmentVisible(pluginType, false)
+    /**
+     * If the active plugin is no longer visible in its category (e.g., sensitivity plugin
+     * incompatible with the current APS algorithm), disable it and fall back to the default.
+     *
+     * Framework plugins declared `alwaysEnabled` are exempt — they use `showInList { false }`
+     * to hide from the UI list but must stay functional regardless.
+     */
+    private fun fallbackIfNotVisible(active: PluginBase, type: PluginType): PluginBase {
+        if (active.pluginDescription.alwaysEnabled) return active
+        if (!active.showInList(type)) {
+            active.setPluginEnabled(type, false)
+            val default = getDefaultPlugin(type)
+            default.setPluginEnabled(type, true)
+            aapsLogger.debug(LTag.CONFIGBUILDER, "Falling back ${type.name} from ${active.name} to ${default.name}")
+            return default
+        }
+        return active
     }
 
     private fun getTheOneEnabledInArray(pluginsInCategory: ArrayList<PluginBase>, type: PluginType): PluginBase? {
@@ -230,12 +247,8 @@ class PluginStore @Inject constructor(
     override val activeBgSource: BgSource
         get() = activeBgSourceStore ?: checkNotNull(activeBgSourceStore) { "No bg source selected" }
 
-    override val activeProfileSource: ProfileSource
-        get() = getSpecificPluginsListByInterface(ProfileSource::class.java).first() as ProfileSource
-
-    // App may not be initialized yet. Wait before second return
-    override val activeAPS: APS
-        get() = activeAPSStore ?: checkNotNull(activeAPSStore) { "No APS selected" }
+    override val activeAPS: APS?
+        get() = activeAPSStore
 
     override val activePump: PumpWithConcentration
         get() = pumpWithConcentration.get()
@@ -256,8 +269,8 @@ class PluginStore @Inject constructor(
     override val activeSmoothing: Smoothing
         get() = activeSmoothingStore ?: checkNotNull(activeSmoothingStore) { "No smoothing selected" }
 
-    override val activeOverview: Overview
-        get() = getSpecificPluginsListByInterface(Overview::class.java).first() as Overview
+    override val activeCalibration: Calibration
+        get() = activeCalibrationStore ?: checkNotNull(activeCalibrationStore) { "No calibration selected" }
 
     override val activeSafety: Safety
         get() = getSpecificPluginsListByInterface(Safety::class.java).first() as Safety
@@ -266,16 +279,14 @@ class PluginStore @Inject constructor(
         get() = getSpecificPluginsListByInterface(IobCobCalculator::class.java).first() as IobCobCalculator
     override val activeObjectives: Objectives?
         get() = getSpecificPluginsListByInterface(Objectives::class.java).firstOrNull() as Objectives?
-    override val activeNsClient: NsClient?
-        get() = getTheOneEnabledInArray(getSpecificPluginsListByInterface(NsClient::class.java), PluginType.SYNC) as NsClient?
 
     @Suppress("UNCHECKED_CAST")
     override val firstActiveSync: Sync?
-        get() = (getSpecificPluginsList(PluginType.SYNC) as ArrayList<Sync>).firstOrNull { it.connected }
+        get() = (getSpecificPluginsListByInterface(Sync::class.java) as ArrayList<Sync>).firstOrNull { it.connected }
 
     @Suppress("UNCHECKED_CAST")
     override val activeSyncs: ArrayList<Sync>
-        get() = getSpecificPluginsList(PluginType.SYNC) as ArrayList<Sync>
+        get() = getSpecificPluginsListByInterface(Sync::class.java) as ArrayList<Sync>
 
     override fun getPluginsList(): ArrayList<PluginBase> = ArrayList(plugins)
 
@@ -315,11 +326,20 @@ class PluginStore @Inject constructor(
         val globalMissing = globalPermissions(context).filter { group ->
             group.permissions.any { perm -> isPermissionMissing(context, perm) }
         }
-        return (globalMissing + pluginPerms + specialPluginPerms).distinctBy { it.permissions.toSet() }
+        // Non-plugin feature permissions (e.g. standalone Automation). Queried dynamically, so a
+        // feature only contributes its permission while it actually needs it. isPermissionMissing
+        // handles both standard and special permission identifiers.
+        val providerMissing = permissionProviders.get()
+            .flatMap { it.requiredPermissions() }
+            .filter { group -> group.permissions.any { perm -> isPermissionMissing(context, perm) } }
+            .distinctBy { it.permissions.toSet() }
+        return (globalMissing + pluginPerms + specialPluginPerms + providerMissing).distinctBy { it.permissions.toSet() }
     }
 
     override fun collectAllPermissions(context: Context): List<PermissionGroup> =
-        (globalPermissions(context) + plugins.filter { it.isEnabled() }.flatMap { it.requiredPermissions() })
+        (globalPermissions(context) +
+            plugins.filter { it.isEnabled() }.flatMap { it.requiredPermissions() } +
+            permissionProviders.get().flatMap { it.requiredPermissions() })
             .distinctBy { it.permissions.toSet() }
 
 }

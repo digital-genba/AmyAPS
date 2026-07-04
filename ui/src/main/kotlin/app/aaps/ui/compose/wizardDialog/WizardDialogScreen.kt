@@ -5,14 +5,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Button
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.Surface
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -21,17 +14,20 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
@@ -39,6 +35,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -46,15 +43,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.MultiChoiceSegmentedButtonRow
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.TextField
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
 import androidx.compose.material3.TooltipAnchorPosition
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
@@ -70,21 +65,24 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.DialogProperties
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.aaps.core.interfaces.profile.ProfileUtil
 import app.aaps.core.interfaces.utils.DecimalFormatter
-import java.text.DecimalFormat
 import app.aaps.core.ui.compose.AapsTopAppBar
 import app.aaps.core.ui.compose.CarbTimeRow
 import app.aaps.core.ui.compose.NumberInputRow
+import app.aaps.core.ui.compose.QuickAddButtons
+import app.aaps.core.ui.compose.banner.WarningBanner
+import app.aaps.core.ui.compose.bottomBarSafeArea
 import app.aaps.core.ui.compose.clearFocusOnTap
-import app.aaps.core.ui.compose.dialogs.OkCancelDialog
+import app.aaps.core.ui.compose.consumeOverscroll
+import app.aaps.core.ui.compose.dialogs.ElementConfirmationDialog
 import app.aaps.core.ui.compose.icons.IcBread
 import app.aaps.core.ui.compose.icons.IcCake
 import app.aaps.core.ui.compose.icons.IcPizza
@@ -93,12 +91,12 @@ import app.aaps.core.ui.compose.navigation.ElementType
 import app.aaps.core.ui.compose.navigation.color
 import app.aaps.core.ui.compose.navigation.icon
 import app.aaps.core.ui.compose.navigation.labelResId
-import app.aaps.core.ui.compose.preference.AdaptivePreferenceList
+import app.aaps.core.ui.compose.preference.PreferenceSheetContent
 import app.aaps.core.ui.compose.preference.PreferenceSubScreenDef
-import app.aaps.core.ui.compose.preference.ProvidePreferenceTheme
+import app.aaps.core.ui.compose.rememberBringIntoViewOnExpand
 import app.aaps.ui.R
 import kotlinx.coroutines.launch
-import app.aaps.core.keys.R as KeysR
+import java.text.DecimalFormat
 import app.aaps.core.ui.R as CoreUiR
 
 @Composable
@@ -114,12 +112,16 @@ fun WizardDialogScreen(
     LaunchedEffect(Unit) {
         viewModel.sideEffect.collect { effect ->
             when (effect) {
-                is WizardDialogViewModel.SideEffect.ShowDeliveryError -> {
+                is WizardDialogViewModel.SideEffect.ShowDeliveryError  -> {
                     onShowDeliveryError(effect.comment)
                 }
 
                 is WizardDialogViewModel.SideEffect.ShowTempBasalError -> {
                     onShowDeliveryError(effect.comment)
+                }
+
+                is WizardDialogViewModel.SideEffect.NavigateBack       -> {
+                    onNavigateBack()
                 }
             }
         }
@@ -128,9 +130,7 @@ fun WizardDialogScreen(
     // Dialog states (rememberSaveable to survive rotation)
     var showConfirmation by rememberSaveable { mutableStateOf(false) }
     var showNoAction by rememberSaveable { mutableStateOf(false) }
-    var showBolusAdvisorPrompt by rememberSaveable { mutableStateOf(false) }
-    var showAdvisorConfirmation by rememberSaveable { mutableStateOf(false) }
-    var showNormalConfirmation by rememberSaveable { mutableStateOf(false) }
+    var showRecordOnly by rememberSaveable { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
 
     // Settings bottom sheet
@@ -147,97 +147,40 @@ fun WizardDialogScreen(
 
     // --- Confirmation flow ---
     if (showConfirmation) {
-        if (!viewModel.hasAction()) {
-            showConfirmation = false
-            showNoAction = true
-        } else if (viewModel.needsBolusAdvisor()) {
-            showConfirmation = false
-            showBolusAdvisorPrompt = true
-        } else {
-            showConfirmation = false
-            showNormalConfirmation = true
+        showConfirmation = false
+        when {
+            !viewModel.hasAction()   -> showNoAction = true
+            // Master can't deliver → log the wizard calc locally (record-only). Master-only; a client always delivers.
+            uiState.forcedRecordOnly -> showRecordOnly = true
+            // Deliver role-transparently: the master recomputes, caps + authors the confirmation and shows it on the
+            // single app-level dialog (both roles); the advisor fork is decided from the master's prepared result.
+            // The wizard stays open behind the confirmation — it closes only after the user confirms (via the
+            // NavigateBack side effect from deliverManualWizard); Cancel keeps it open with inputs intact.
+            else                     -> viewModel.deliverManualWizard()
         }
     }
 
     // No action dialog
     if (showNoAction) {
-        OkCancelDialog(
-            title = stringResource(ElementType.BOLUS_WIZARD.labelResId()),
+        ElementConfirmationDialog(
+            elementType = ElementType.BOLUS_WIZARD,
             message = stringResource(CoreUiR.string.no_action_selected),
-            icon = ElementType.BOLUS_WIZARD.icon(),
-            iconTint = ElementType.BOLUS_WIZARD.color(),
             onConfirm = { showNoAction = false },
             onDismiss = { showNoAction = false }
         )
     }
 
-    // Bolus advisor prompt: Yes / No / Cancel (3-button dialog)
-    if (showBolusAdvisorPrompt) {
-        AlertDialog(
-            onDismissRequest = { showBolusAdvisorPrompt = false },
-            icon = {
-                Icon(
-                    imageVector = ElementType.BOLUS_WIZARD.icon(),
-                    contentDescription = null,
-                    tint = ElementType.BOLUS_WIZARD.color()
-                )
-            },
-            title = { Text(stringResource(CoreUiR.string.bolus_advisor)) },
-            text = { Text(stringResource(CoreUiR.string.bolus_advisor_message)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    showBolusAdvisorPrompt = false
-                    showAdvisorConfirmation = true
-                }) {
-                    Text(stringResource(CoreUiR.string.yes))
-                }
-            },
-            dismissButton = {
-                Row {
-                    TextButton(onClick = {
-                        showBolusAdvisorPrompt = false
-                        showNormalConfirmation = true
-                    }) {
-                        Text(stringResource(CoreUiR.string.no))
-                    }
-                    TextButton(onClick = { showBolusAdvisorPrompt = false }) {
-                        Text(stringResource(CoreUiR.string.cancel))
-                    }
-                }
-            },
-            properties = DialogProperties(dismissOnBackPress = true, dismissOnClickOutside = false)
-        )
-    }
-
-    // Advisor confirmation: show summary with advisor=true
-    if (showAdvisorConfirmation) {
-        val summaryLines = viewModel.getAdvisorSummary()
-        OkCancelDialog(
-            title = stringResource(ElementType.BOLUS_WIZARD.labelResId()),
-            message = summaryLines.joinToString("<br/>"),
-            icon = ElementType.BOLUS_WIZARD.icon(),
-            iconTint = ElementType.BOLUS_WIZARD.color(),
+    // Record-only confirmation (master can't deliver): locally-built lines, persisted on confirm. The delivery path
+    // shows the master-authored confirmation on the single app-level dialog instead (see deliverManualWizard).
+    if (showRecordOnly) {
+        ElementConfirmationDialog(
+            elementType = ElementType.BOLUS_WIZARD,
+            lines = viewModel.getConfirmationSummary(),
             onConfirm = {
-                viewModel.executeBolusAdvisor()
+                viewModel.recordOnly()
                 onNavigateBack()
             },
-            onDismiss = { showAdvisorConfirmation = false }
-        )
-    }
-
-    // Normal confirmation: show summary with advisor=false
-    if (showNormalConfirmation) {
-        val summaryLines = viewModel.getConfirmationSummary()
-        OkCancelDialog(
-            title = stringResource(ElementType.BOLUS_WIZARD.labelResId()),
-            message = summaryLines.joinToString("<br/>"),
-            icon = ElementType.BOLUS_WIZARD.icon(),
-            iconTint = ElementType.BOLUS_WIZARD.color(),
-            onConfirm = {
-                viewModel.executeNormal()
-                onNavigateBack()
-            },
-            onDismiss = { showNormalConfirmation = false }
+            onDismiss = { showRecordOnly = false }
         )
     }
 
@@ -245,9 +188,10 @@ fun WizardDialogScreen(
         uiState = uiState,
         decimalFormatter = viewModel.decimalFormatter,
         profileUtil = viewModel.profileUtil,
-        unitsLabel = uiState.units.asText,
+        unitsLabel = uiState.units.displayLabel,
         onBgChange = { viewModel.updateBg(it) },
         onCarbsChange = { viewModel.updateCarbs(it.toInt()) },
+        onAddCarbs = viewModel::addCarbs,
         onCarbsTypeChange = viewModel::updateCarbsType,
         onPercentageChange = { viewModel.updatePercentage(it.toInt()) },
         onDirectCorrectionChange = { viewModel.updateDirectCorrection(it) },
@@ -277,6 +221,7 @@ private fun WizardDialogContent(
     unitsLabel: String,
     onBgChange: (Double) -> Unit,
     onCarbsChange: (Double) -> Unit,
+    onAddCarbs: (Int) -> Unit,
     onCarbsTypeChange: (CarbsType) -> Unit,
     onPercentageChange: (Double) -> Unit,
     onDirectCorrectionChange: (Double) -> Unit,
@@ -300,24 +245,12 @@ private fun WizardDialogContent(
     Scaffold(
         topBar = {
             AapsTopAppBar(
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = ElementType.BOLUS_WIZARD.icon(),
-                            contentDescription = null,
-                            tint = ElementType.BOLUS_WIZARD.color()
-                        )
-                        Text(stringResource(ElementType.BOLUS_WIZARD.labelResId()))
-                    }
-                },
+                title = { Text(stringResource(ElementType.BOLUS_WIZARD.labelResId())) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = stringResource(CoreUiR.string.back)
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = stringResource(CoreUiR.string.close)
                         )
                     }
                 },
@@ -334,46 +267,61 @@ private fun WizardDialogContent(
         },
         bottomBar = {
             Button(
-                onClick = onConfirmClick,
+                onClick = {
+                    focusManager.clearFocus()
+                    onConfirmClick()
+                },
                 enabled = uiState.okVisible,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .imePadding()
+                    .bottomBarSafeArea()
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
-                    Icon(
-                        imageVector = Icons.Filled.Check,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    if (uiState.totalInsulin > 0.0) {
-                        Text(stringResource(CoreUiR.string.format_insulin_units, uiState.totalInsulin))
-                    }
-                    if (uiState.totalInsulin > 0.0 && uiState.carbs > 0) {
-                        Spacer(modifier = Modifier.width(4.dp))
-                    }
-                    if (uiState.carbs > 0) {
-                        Text(stringResource(CoreUiR.string.format_carbs, uiState.carbs))
-                    }
-                    if (!uiState.okVisible) {
-                        Text(stringResource(CoreUiR.string.ok))
-                    }
+                Icon(
+                    imageVector = Icons.Filled.Check,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                if (uiState.totalInsulin > 0.0) {
+                    Text(stringResource(CoreUiR.string.format_insulin_units, uiState.totalInsulin))
                 }
+                if (uiState.totalInsulin > 0.0 && (uiState.effectiveCarbs > 0 || uiState.eCarbs > 0)) {
+                    Spacer(modifier = Modifier.width(4.dp))
+                }
+                if (uiState.effectiveCarbs > 0 || uiState.eCarbs > 0) {
+                    Text(
+                        if (uiState.eCarbs > 0) stringResource(CoreUiR.string.format_carbs_split, uiState.effectiveCarbs, uiState.eCarbs)
+                        else stringResource(CoreUiR.string.format_carbs, uiState.effectiveCarbs)
+                    )
+                }
+                if (!uiState.okVisible) {
+                    Text(stringResource(CoreUiR.string.ok))
+                }
+            }
         }
     ) { paddingValues ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+                .consumeOverscroll()
                 .verticalScroll(rememberScrollState())
                 .clearFocusOnTap(focusManager)
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            // --- Forced-record-only warning ---
+            if (uiState.forcedRecordOnly) {
+                WarningBanner(message = stringResource(CoreUiR.string.bolus_recorded_only))
+            }
+
             // --- Calculation Card (expandable, at top) ---
+            val calculationExpandRequester = rememberBringIntoViewOnExpand(uiState.calculationExpanded)
             Card(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .bringIntoViewRequester(calculationExpandRequester),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
@@ -403,9 +351,10 @@ private fun WizardDialogContent(
                                         color = ElementType.INSULIN.color()
                                     )
                                 }
-                                if (uiState.carbs > 0) {
+                                if (uiState.effectiveCarbs > 0 || uiState.eCarbs > 0) {
                                     Text(
-                                        text = stringResource(CoreUiR.string.format_carbs, uiState.carbs),
+                                        text = if (uiState.eCarbs > 0) stringResource(CoreUiR.string.format_carbs_split, uiState.effectiveCarbs, uiState.eCarbs)
+                                        else stringResource(CoreUiR.string.format_carbs, uiState.effectiveCarbs),
                                         fontWeight = FontWeight.Bold,
                                         color = ElementType.CARBS.color()
                                     )
@@ -663,226 +612,122 @@ private fun WizardDialogContent(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
-              Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                // Carbs Input
-                Column(modifier = itemModifier) {
-                    NumberInputRow(
-                        labelResId = CoreUiR.string.carbs,
-                        value = uiState.carbs.toDouble(),
-                        onValueChange = onCarbsChange,
-                        valueRange = 0.0..uiState.maxCarbs.toDouble(),
-                        step = 1.0,
-                        unitLabel = "g"
-                    )
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    // Carbs Input
+                    Column(modifier = itemModifier) {
+                        NumberInputRow(
+                            labelResId = CoreUiR.string.carbs,
+                            value = uiState.carbs.toDouble(),
+                            onValueChange = onCarbsChange,
+                            valueRange = 0.0..uiState.maxCarbs.toDouble(),
+                            step = 1.0,
+                            unitLabel = "g"
+                        )
+                        QuickAddButtons(
+                            increment1 = uiState.carbsButtonIncrement1,
+                            increment2 = uiState.carbsButtonIncrement2,
+                            increment3 = uiState.carbsButtonIncrement3,
+                            onAddCarbs = onAddCarbs
+                        )
 
-                    // Carbs type selector
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        SingleChoiceSegmentedButtonRow(
-                            modifier = Modifier.weight(1f)
+                        // Carbs type selector
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            CarbsType.entries.forEachIndexed { index, type ->
-                                SegmentedButton(
-                                    selected = uiState.carbsType == type,
-                                    onClick = { onCarbsTypeChange(type) },
-                                    shape = SegmentedButtonDefaults.itemShape(index, CarbsType.entries.size),
-                                    icon = {}
-                                ) {
+                            SingleChoiceSegmentedButtonRow(
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                CarbsType.entries.forEachIndexed { index, type ->
+                                    SegmentedButton(
+                                        selected = uiState.carbsType == type,
+                                        onClick = { onCarbsTypeChange(type) },
+                                        shape = SegmentedButtonDefaults.itemShape(index, CarbsType.entries.size),
+                                        icon = {}
+                                    ) {
+                                        Icon(
+                                            imageVector = when (type) {
+                                                CarbsType.BREAD -> IcBread
+                                                CarbsType.CAKE  -> IcCake
+                                                CarbsType.PIZZA -> IcPizza
+                                            },
+                                            contentDescription = type.name,
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            val tooltipState = rememberTooltipState()
+                            val scope = rememberCoroutineScope()
+                            TooltipBox(
+                                positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
+                                tooltip = {
+                                    PlainTooltip {
+                                        Column {
+                                            Text(
+                                                text = when (uiState.carbsType) {
+                                                    CarbsType.BREAD -> stringResource(CoreUiR.string.carbs_type_bread)
+                                                    CarbsType.CAKE  -> stringResource(CoreUiR.string.carbs_type_cake)
+                                                    CarbsType.PIZZA -> stringResource(CoreUiR.string.carbs_type_pizza)
+                                                }
+                                            )
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            val type = uiState.carbsType
+                                            Text(
+                                                text = if (type == CarbsType.BREAD)
+                                                    stringResource(R.string.wizard_carbs_type_bread_desc)
+                                                else
+                                                    stringResource(
+                                                        R.string.wizard_carbs_type_desc,
+                                                        100 - type.carbsPercent,
+                                                        type.eCarbsPercent,
+                                                        type.eCarbsDelayMinutes,
+                                                        type.eCarbsDurationHours
+                                                    ),
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                },
+                                state = tooltipState
+                            ) {
+                                IconButton(onClick = { scope.launch { tooltipState.show() } }) {
                                     Icon(
-                                        imageVector = when (type) {
-                                            CarbsType.BREAD -> IcBread
-                                            CarbsType.CAKE  -> IcCake
-                                            CarbsType.PIZZA -> IcPizza
-                                        },
-                                        contentDescription = type.name,
-                                        modifier = Modifier.size(24.dp)
+                                        imageVector = Icons.Outlined.Info,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 }
                             }
                         }
-
-                        val tooltipState = rememberTooltipState()
-                        val scope = rememberCoroutineScope()
-                        TooltipBox(
-                            positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
-                            tooltip = {
-                                PlainTooltip {
-                                    Column {
-                                        Text(
-                                            text = when (uiState.carbsType) {
-                                                CarbsType.BREAD -> stringResource(CoreUiR.string.carbs_type_bread)
-                                                CarbsType.CAKE  -> stringResource(CoreUiR.string.carbs_type_cake)
-                                                CarbsType.PIZZA -> stringResource(CoreUiR.string.carbs_type_pizza)
-                                            }
-                                        )
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        val type = uiState.carbsType
-                                        Text(
-                                            text = if (type == CarbsType.BREAD)
-                                                stringResource(R.string.wizard_carbs_type_bread_desc)
-                                            else
-                                                stringResource(
-                                                    R.string.wizard_carbs_type_desc,
-                                                    100 - type.carbsPercent,
-                                                    type.eCarbsPercent,
-                                                    type.eCarbsDelayMinutes,
-                                                    type.eCarbsDurationHours
-                                                ),
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                }
-                            },
-                            state = tooltipState
-                        ) {
-                            IconButton(onClick = { scope.launch { tooltipState.show() } }) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Info,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
                     }
-                }
 
-                // Direct Correction input
-                NumberInputRow(
-                    labelResId = CoreUiR.string.wizard_correction,
-                    value = uiState.directCorrection,
-                    onValueChange = onDirectCorrectionChange,
-                    valueRange = -uiState.maxBolus..uiState.maxBolus,
-                    step = uiState.bolusStep,
-                    unitLabel = stringResource(CoreUiR.string.insulin_unit_shortname),
-                    decimalPlaces = 2,
-                    modifier = itemModifier
-                )
+                    // Direct Correction input
+                    NumberInputRow(
+                        labelResId = CoreUiR.string.wizard_correction,
+                        value = uiState.directCorrection,
+                        onValueChange = onDirectCorrectionChange,
+                        valueRange = -uiState.maxBolus..uiState.maxBolus,
+                        step = uiState.bolusStep,
+                        unitLabel = stringResource(CoreUiR.string.insulin_unit_shortname),
+                        decimalPlaces = 2,
+                        modifier = itemModifier
+                    )
 
-                // Carb Time (compact row with popup dialog)
-                CarbTimeRow(
-                    offsetMinutes = uiState.carbTime,
-                    alarmChecked = uiState.alarmChecked,
-                    onOffsetChange = { onCarbTimeChange(it.toDouble()) },
-                    onAlarmChange = onAlarmToggle,
-                    modifier = itemModifier
-                )
-                // BG (collapsible, auto-expand when old/missing)
-                Column(modifier = itemModifier) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text(
-                                text = stringResource(CoreUiR.string.wizard_bg_label) + ": ",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            if (uiState.hasBgData) {
-                                val bgFormat = if (uiState.isMgdl) DecimalFormat("0") else DecimalFormat("0.0")
-                                Text(
-                                    text = "${bgFormat.format(uiState.bg)} $unitsLabel",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Text(
-                                    text = "(${uiState.bgAgeMinutes} min)",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (bgIsOld) MaterialTheme.colorScheme.error
-                                    else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            } else {
-                                Text(
-                                    text = stringResource(CoreUiR.string.not_available_full),
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                            }
-                        }
-                        if (!bgExpanded) {
-                            FilledTonalButton(onClick = { bgExpanded = true }) {
-                                Text(stringResource(CoreUiR.string.change))
-                            }
-                        }
-                    }
-                    AnimatedVisibility(
-                        visible = bgExpanded,
-                        enter = expandVertically(),
-                        exit = shrinkVertically()
-                    ) {
-                        NumberInputRow(
-                            labelResId = CoreUiR.string.wizard_bg_label,
-                            value = uiState.bg,
-                            onValueChange = onBgChange,
-                            valueRange = uiState.bgRange,
-                            step = uiState.bgStep,
-                            unitLabel = unitsLabel,
-                            decimalPlaces = if (uiState.isMgdl) 0 else 1
-                        )
-                    }
-                }
-
-                // Percentage (collapsible)
-                Column(modifier = itemModifier) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text(
-                                text = stringResource(CoreUiR.string.wizard_use_percentage) + ": ",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = "${uiState.percentage}%",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                        if (!percentageExpanded) {
-                            FilledTonalButton(onClick = { percentageExpanded = true }) {
-                                Text(stringResource(CoreUiR.string.change))
-                            }
-                        }
-                    }
-                    AnimatedVisibility(
-                        visible = percentageExpanded,
-                        enter = expandVertically(),
-                        exit = shrinkVertically()
-                    ) {
-                        NumberInputRow(
-                            labelResId = CoreUiR.string.wizard_use_percentage,
-                            value = uiState.percentage.toDouble(),
-                            onValueChange = onPercentageChange,
-                            valueRange = 10.0..200.0,
-                            step = 5.0,
-                            unitLabel = "%",
-                            decimalPlaces = 0
-                        )
-                    }
-                }
-
-                // Profile (collapsible, hidden in simple mode)
-                if (!uiState.simpleMode) {
-                    val currentProfile = uiState.profileNames.getOrElse(uiState.selectedProfileIndex) { "" }
-                    var profileExpanded by rememberSaveable { mutableStateOf(false) }
-
-                    Column(modifier = itemModifier) {
+                    // Carb Time (compact row with popup dialog)
+                    CarbTimeRow(
+                        offsetMinutes = uiState.carbTime,
+                        alarmChecked = uiState.alarmChecked,
+                        onOffsetChange = { onCarbTimeChange(it.toDouble()) },
+                        onAlarmChange = onAlarmToggle,
+                        modifier = itemModifier
+                    )
+                    // BG (collapsible, auto-expand when old/missing)
+                    val bgExpandRequester = rememberBringIntoViewOnExpand(bgExpanded)
+                    Column(modifier = itemModifier.bringIntoViewRequester(bgExpandRequester)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -894,47 +739,160 @@ private fun WizardDialogContent(
                                 modifier = Modifier.weight(1f)
                             ) {
                                 Text(
-                                    text = stringResource(CoreUiR.string.profile) + ": ",
+                                    text = stringResource(CoreUiR.string.wizard_bg_label) + ": ",
                                     style = MaterialTheme.typography.labelLarge,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                                Text(
-                                    text = currentProfile,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
+                                if (uiState.hasBgData) {
+                                    val bgFormat = if (uiState.isMgdl) DecimalFormat("0") else DecimalFormat("0.0")
+                                    Text(
+                                        text = "${bgFormat.format(uiState.bg)} $unitsLabel",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = "(${uiState.bgAgeMinutes} min)",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (bgIsOld) MaterialTheme.colorScheme.error
+                                        else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                } else {
+                                    Text(
+                                        text = stringResource(CoreUiR.string.not_available_full),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                }
                             }
-                            if (!profileExpanded) {
-                                FilledTonalButton(onClick = { profileExpanded = true }) {
+                            if (!bgExpanded) {
+                                FilledTonalButton(onClick = { bgExpanded = true }) {
                                     Text(stringResource(CoreUiR.string.change))
                                 }
                             }
                         }
                         AnimatedVisibility(
-                            visible = profileExpanded,
+                            visible = bgExpanded,
                             enter = expandVertically(),
                             exit = shrinkVertically()
                         ) {
-                            ProfileDropdown(
-                                profileNames = uiState.profileNames,
-                                selectedIndex = uiState.selectedProfileIndex,
-                                onSelect = onProfileSelect
+                            NumberInputRow(
+                                labelResId = CoreUiR.string.wizard_bg_label,
+                                value = uiState.bg,
+                                onValueChange = onBgChange,
+                                valueRange = uiState.bgRange,
+                                step = uiState.bgStep,
+                                unitLabel = unitsLabel,
+                                decimalPlaces = if (uiState.isMgdl) 0 else 1
                             )
                         }
                     }
+
+                    // Percentage (collapsible)
+                    val percentageExpandRequester = rememberBringIntoViewOnExpand(percentageExpanded)
+                    Column(modifier = itemModifier.bringIntoViewRequester(percentageExpandRequester)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text(
+                                    text = stringResource(CoreUiR.string.wizard_use_percentage) + ": ",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = "${uiState.percentage}%",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                            if (!percentageExpanded) {
+                                FilledTonalButton(onClick = { percentageExpanded = true }) {
+                                    Text(stringResource(CoreUiR.string.change))
+                                }
+                            }
+                        }
+                        AnimatedVisibility(
+                            visible = percentageExpanded,
+                            enter = expandVertically(),
+                            exit = shrinkVertically()
+                        ) {
+                            NumberInputRow(
+                                labelResId = CoreUiR.string.wizard_use_percentage,
+                                value = uiState.percentage.toDouble(),
+                                onValueChange = onPercentageChange,
+                                valueRange = 10.0..200.0,
+                                step = 5.0,
+                                unitLabel = "%",
+                                decimalPlaces = 0
+                            )
+                        }
+                    }
+
+                    // Profile (collapsible, hidden in simple mode)
+                    if (!uiState.simpleMode) {
+                        val currentProfile = uiState.profileNames.getOrElse(uiState.selectedProfileIndex) { "" }
+                        var profileExpanded by rememberSaveable { mutableStateOf(false) }
+                        val profileExpandRequester = rememberBringIntoViewOnExpand(profileExpanded)
+
+                        Column(modifier = itemModifier.bringIntoViewRequester(profileExpandRequester)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text(
+                                        text = stringResource(CoreUiR.string.profile) + ": ",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = currentProfile,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                                if (!profileExpanded) {
+                                    FilledTonalButton(onClick = { profileExpanded = true }) {
+                                        Text(stringResource(CoreUiR.string.change))
+                                    }
+                                }
+                            }
+                            AnimatedVisibility(
+                                visible = profileExpanded,
+                                enter = expandVertically(),
+                                exit = shrinkVertically()
+                            ) {
+                                ProfileDropdown(
+                                    profileNames = uiState.profileNames,
+                                    selectedIndex = uiState.selectedProfileIndex,
+                                    onSelect = onProfileSelect
+                                )
+                            }
+                        }
+                    }
+                    // Notes
+                    if (uiState.showNotes) {
+                        TextField(
+                            value = uiState.notes,
+                            onValueChange = onNotesChange,
+                            label = { Text(stringResource(CoreUiR.string.notes_label)) },
+                            modifier = itemModifier,
+                            singleLine = false,
+                            maxLines = 3
+                        )
+                    }
                 }
-                // Notes
-                if (uiState.showNotes) {
-                    TextField(
-                        value = uiState.notes,
-                        onValueChange = onNotesChange,
-                        label = { Text(stringResource(CoreUiR.string.notes_label)) },
-                        modifier = itemModifier,
-                        singleLine = false,
-                        maxLines = 3
-                    )
-                }
-              }
             }
 
             Spacer(modifier = Modifier.height(8.dp))
@@ -978,19 +936,10 @@ private fun WizardSettingsSheet(
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface
     ) {
-        Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
-            Text(
-                text = stringResource(settingsDef.titleResId),
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp)
-            )
-            ProvidePreferenceTheme {
-                AdaptivePreferenceList(
-                    items = settingsDef.items
-                )
-            }
-        }
+        PreferenceSheetContent(
+            settingsDef = settingsDef,
+            modifier = Modifier.padding(bottom = 24.dp)
+        )
     }
 }
 

@@ -13,11 +13,17 @@ import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.configuration.ConfigBuilder
 import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.plugin.PluginBase
-import app.aaps.core.interfaces.plugin.PluginDescription
 import app.aaps.core.keys.interfaces.Preferences
+import app.aaps.core.ui.compose.ConfigPluginUiModel
+import app.aaps.core.ui.compose.pluginCategoryTitleRes
+import app.aaps.ui.plugin.HardwarePumpConfirmation
+import app.aaps.ui.plugin.PluginSwitchConfirmation
+import app.aaps.ui.plugin.PluginSwitchDialogs
+import app.aaps.ui.plugin.PluginSwitchHandler
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -26,15 +32,8 @@ import javax.inject.Inject
 data class ConfigurationUiState(
     val categories: List<ConfigCategoryUiModel> = emptyList(),
     val isSimpleMode: Boolean = true,
-    val hardwarePumpConfirmation: HardwarePumpConfirmation? = null
-)
-
-@Immutable
-data class HardwarePumpConfirmation(
-    val message: String,
-    val pluginId: String,
-    val type: PluginType,
-    val enabled: Boolean
+    val hardwarePumpConfirmation: HardwarePumpConfirmation? = null,
+    val pluginSwitchConfirmation: PluginSwitchConfirmation? = null
 )
 
 @HiltViewModel
@@ -46,14 +45,28 @@ class ConfigurationViewModel @Inject constructor(
     private val preferences: Preferences
 ) : ViewModel() {
 
-    val uiState: StateFlow<ConfigurationUiState>
-        field = MutableStateFlow(ConfigurationUiState())
+    private val _uiState = MutableStateFlow(ConfigurationUiState())
+    val uiState: StateFlow<ConfigurationUiState> = _uiState.asStateFlow()
 
     // Keep plugin references for toggle callbacks (UI only sees IDs)
     private var pluginLookup: Map<String, PluginBase> = emptyMap()
 
+    // Shared enable/disable orchestration (swap confirmation + hardware-pump gate + serialized off-main switch).
+    // onSwitched rebuilds the categories once a switch commits, same as before.
+    private val switchHandler = PluginSwitchHandler(viewModelScope, activePlugin, configBuilder, onSwitched = ::refreshCategories)
+
     init {
         loadCategories()
+        // Refresh live when a synced selection changes — including a master→client push adopted while the
+        // screen is open (fires on putRemote too), not just the user's own toggles.
+        viewModelScope.launch {
+            configBuilder.activeSelectionChanges.collect { refreshCategories() }
+        }
+        // Mirror the handler's confirmation dialogs into this screen's UI state (covers async updates such as
+        // the hardware-pump gate appearing after the switch call returns).
+        viewModelScope.launch {
+            switchHandler.dialogs.collect { syncSwitchDialogs(it) }
+        }
     }
 
     private fun loadCategories() {
@@ -64,40 +77,43 @@ class ConfigurationViewModel @Inject constructor(
 
     fun togglePluginEnabled(pluginId: String, type: PluginType, enabled: Boolean) {
         val plugin = pluginLookup[pluginId] ?: return
-        val confirmationMessage = configBuilder.requestPluginSwitch(plugin, enabled, type)
-        if (confirmationMessage != null) {
-            uiState.update { state ->
-                state.copy(
-                    hardwarePumpConfirmation = HardwarePumpConfirmation(
-                        message = confirmationMessage,
-                        pluginId = pluginId,
-                        type = type,
-                        enabled = enabled
-                    )
-                )
-            }
-        } else {
-            refreshCategories()
-        }
+        switchHandler.toggle(plugin, type, enabled)
+        syncSwitchDialogs(switchHandler.dialogs.value)
+    }
+
+    fun confirmPluginSwitch() {
+        switchHandler.confirmSwitch()
+        syncSwitchDialogs(switchHandler.dialogs.value)
+    }
+
+    fun dismissPluginSwitchDialog() {
+        switchHandler.dismissSwitch()
+        syncSwitchDialogs(switchHandler.dialogs.value)
     }
 
     fun confirmHardwarePumpSwitch() {
-        val confirmation = uiState.value.hardwarePumpConfirmation ?: return
-        val plugin = pluginLookup[confirmation.pluginId] ?: return
-        configBuilder.confirmPumpPluginSwitch(plugin, confirmation.enabled, confirmation.type)
-        uiState.update { it.copy(hardwarePumpConfirmation = null) }
-        refreshCategories()
+        switchHandler.confirmHardwarePump()
+        syncSwitchDialogs(switchHandler.dialogs.value)
     }
 
     fun dismissHardwarePumpDialog() {
-        uiState.update { it.copy(hardwarePumpConfirmation = null) }
-        refreshCategories()
+        switchHandler.dismissHardwarePump()
+        syncSwitchDialogs(switchHandler.dialogs.value)
+    }
+
+    private fun syncSwitchDialogs(dialogs: PluginSwitchDialogs) {
+        _uiState.update {
+            it.copy(
+                hardwarePumpConfirmation = dialogs.hardwarePumpConfirmation,
+                pluginSwitchConfirmation = dialogs.pluginSwitchConfirmation
+            )
+        }
     }
 
     private fun refreshCategories() {
         val isSimple = preferences.simpleMode
         val categories = buildCategories(isSimple)
-        uiState.update { state ->
+        _uiState.update { state ->
             state.copy(
                 categories = categories,
                 isSimpleMode = isSimple
@@ -105,44 +121,49 @@ class ConfigurationViewModel @Inject constructor(
         }
     }
 
+    /** A single-select category whose selection syncs, viewed on a client — drives both client visibility and
+     *  the sync badge. SSOT-derived (configBuilder.syncedSelectionTypes); always false on a master. */
+    private fun clientSynced(type: PluginType) = config.AAPSCLIENT && type in configBuilder.syncedSelectionTypes
+
     private fun buildCategories(isSimpleMode: Boolean): List<ConfigCategoryUiModel> {
         val lookup = mutableMapOf<String, PluginBase>()
         val categories = mutableListOf<ConfigCategoryUiModel>()
 
-        fun addCategory(type: PluginType, titleRes: Int) {
+        fun addCategory(type: PluginType) {
             val plugins = activePlugin.getSpecificPluginsVisibleInList(type)
             if (plugins.isEmpty()) return
+            val titleRes = pluginCategoryTitleRes(type)
             val isMultiSelect = isMultiSelect(type)
 
             val pluginModels = plugins.map { plugin ->
                 val id = plugin.javaClass.simpleName
                 lookup[id] = plugin
                 val pluginEnabled = plugin.isEnabled(type)
-                val hasPreferences = plugin.preferencesId != PluginDescription.PREFERENCE_NONE
+                val hasPreferences = plugin.hasPreferences()
                 ConfigPluginUiModel(
                     id = id,
                     name = plugin.name,
                     description = plugin.description,
-                    menuIcon = plugin.menuIcon,
                     composeIcon = plugin.pluginDescription.icon,
                     isEnabled = pluginEnabled,
                     canToggle = !plugin.pluginDescription.alwaysEnabled && (isMultiSelect || !pluginEnabled),
-                    showPreferences = hasPreferences && pluginEnabled && (!isSimpleMode || plugin.pluginDescription.preferencesVisibleInSimpleMode)
+                    showPreferences = hasPreferences && pluginEnabled && (!isSimpleMode || plugin.pluginDescription.preferencesVisibleInSimpleMode),
+                    hasContent = plugin.hasComposeContent()
                 )
             }
 
             val enabledPlugins = pluginModels.filter { it.isEnabled }
             val subtitle = when {
-                enabledPlugins.size == 1 -> enabledPlugins.first().name
+                enabledPlugins.size == 1                     -> enabledPlugins.first().name
                 isMultiSelect && enabledPlugins.isNotEmpty() -> "${enabledPlugins.size}"
-                else -> "-"
+                else                                         -> "-"
             }
 
             val singleEnabled = enabledPlugins.singleOrNull()
             val defaultIcon = when (type) {
-                PluginType.SYNC -> Icons.Default.Sync
+                PluginType.SYNC    -> Icons.Default.Sync
                 PluginType.GENERAL -> Icons.Default.Extension
-                else -> Icons.Default.Settings
+                else               -> Icons.Default.Settings
             }
 
             categories.add(
@@ -153,29 +174,29 @@ class ConfigurationViewModel @Inject constructor(
                     isMultiSelect = isMultiSelect,
                     subtitle = subtitle,
                     categoryIcon = singleEnabled?.composeIcon ?: defaultIcon,
-                    categoryIconRes = singleEnabled?.let { if (it.menuIcon != -1) it.menuIcon else null }
+                    synced = clientSynced(type)
                 )
             )
         }
 
-        if (config.APS || config.PUMPCONTROL || config.isEngineeringMode()) {
-            addCategory(PluginType.INSULIN, app.aaps.core.ui.R.string.configbuilder_insulin)
+        // A category is also shown on a client when its selection syncs (clientSynced, SSOT-derived) — folded
+        // into each existing gate (rather than appended) so client and master keep the same category order.
+        if (!config.AAPSCLIENT) addCategory(PluginType.BGSOURCE)
+        if (!config.AAPSCLIENT || clientSynced(PluginType.SMOOTHING)) addCategory(PluginType.SMOOTHING)
+        if (!config.AAPSCLIENT || clientSynced(PluginType.CALIBRATION)) addCategory(PluginType.CALIBRATION)
+        if (!config.AAPSCLIENT) addCategory(PluginType.PUMP)
+        if (config.APS || config.PUMPCONTROL || config.isEngineeringMode() || clientSynced(PluginType.SENSITIVITY)) {
+            addCategory(PluginType.SENSITIVITY)
         }
-        if (!config.AAPSCLIENT) {
-            addCategory(PluginType.BGSOURCE, app.aaps.core.ui.R.string.configbuilder_bgsource)
-            addCategory(PluginType.SMOOTHING, app.aaps.core.ui.R.string.configbuilder_smoothing)
-            addCategory(PluginType.PUMP, app.aaps.core.ui.R.string.configbuilder_pump)
-        }
-        if (config.APS || config.PUMPCONTROL || config.isEngineeringMode()) {
-            addCategory(PluginType.SENSITIVITY, app.aaps.core.ui.R.string.configbuilder_sensitivity)
+        if (config.APS || clientSynced(PluginType.APS)) {
+            addCategory(PluginType.APS)
         }
         if (config.APS) {
-            addCategory(PluginType.APS, app.aaps.core.ui.R.string.configbuilder_aps)
-            addCategory(PluginType.LOOP, app.aaps.core.ui.R.string.configbuilder_loop)
-            addCategory(PluginType.CONSTRAINTS, app.aaps.core.ui.R.string.constraints)
+            addCategory(PluginType.LOOP)
+            addCategory(PluginType.CONSTRAINTS)
         }
-        addCategory(PluginType.SYNC, app.aaps.core.ui.R.string.configbuilder_sync)
-        addCategory(PluginType.GENERAL, app.aaps.core.ui.R.string.configbuilder_general)
+        addCategory(PluginType.SYNC)
+        addCategory(PluginType.GENERAL)
 
         pluginLookup = lookup
         return categories
@@ -183,10 +204,6 @@ class ConfigurationViewModel @Inject constructor(
 
     companion object {
 
-        private fun isMultiSelect(type: PluginType): Boolean =
-            type == PluginType.GENERAL ||
-                type == PluginType.CONSTRAINTS ||
-                type == PluginType.LOOP ||
-                type == PluginType.SYNC
+        private fun isMultiSelect(type: PluginType): Boolean = !type.singleSelect
     }
 }

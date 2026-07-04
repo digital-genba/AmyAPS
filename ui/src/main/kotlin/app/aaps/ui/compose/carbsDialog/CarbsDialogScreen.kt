@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -17,66 +16,65 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.TextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
 import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.ui.draw.clip
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.aaps.core.data.ui.ConfirmationLine
 import app.aaps.core.ui.compose.AapsTopAppBar
 import app.aaps.core.ui.compose.CarbTimeRow
+import app.aaps.core.ui.compose.ExcludeFromJacocoGeneratedReport
 import app.aaps.core.ui.compose.NumberInputRow
+import app.aaps.core.ui.compose.QuickAddButtons
+import app.aaps.core.ui.compose.bottomBarSafeArea
 import app.aaps.core.ui.compose.clearFocusOnTap
-import app.aaps.core.ui.compose.dialogs.OkCancelDialog
+import app.aaps.core.ui.compose.consumeOverscroll
+import app.aaps.core.ui.compose.dialogs.ElementConfirmationDialog
 import app.aaps.core.ui.compose.navigation.ElementType
-import app.aaps.core.ui.compose.navigation.color
-import app.aaps.core.ui.compose.navigation.icon
 import app.aaps.core.ui.compose.navigation.labelResId
-import app.aaps.core.ui.compose.preference.AdaptivePreferenceList
+import app.aaps.core.ui.compose.preference.PreferenceSheetContent
 import app.aaps.core.ui.compose.preference.PreferenceSubScreenDef
-import app.aaps.core.ui.compose.preference.ProvidePreferenceTheme
 import app.aaps.ui.compose.EventDatePicker
 import app.aaps.ui.compose.EventTimePicker
 import app.aaps.ui.compose.components.DialogStatusBar
+import app.aaps.ui.compose.overview.chips.CobUiState
+import app.aaps.ui.compose.overview.chips.IobUiState
 import app.aaps.ui.compose.overview.graphs.BgInfoUiState
-import app.aaps.ui.compose.overview.graphs.CobUiState
-import app.aaps.ui.compose.overview.graphs.IobUiState
 import kotlinx.coroutines.flow.StateFlow
 import java.text.DecimalFormat
 import app.aaps.core.interfaces.R as InterfacesR
-import app.aaps.core.keys.R as KeysR
 import app.aaps.core.ui.R as CoreUiR
 
 @Composable
@@ -94,6 +92,14 @@ fun CarbsDialogScreen(
     val iob by iobUiState.collectAsStateWithLifecycle()
     val cob by cobUiState.collectAsStateWithLifecycle()
 
+    // Dialog states (rememberSaveable to survive rotation)
+    var showNoAction by rememberSaveable { mutableStateOf(false) }
+    var showDatePicker by rememberSaveable { mutableStateOf(false) }
+    var showTimePicker by rememberSaveable { mutableStateOf(false) }
+    var showButtonSettings by rememberSaveable { mutableStateOf(false) }
+    // The master's prepared confirmation (bolusId + its merged lines), set via the ShowConfirmation side effect.
+    var confirmation by remember { mutableStateOf<Pair<Long, List<ConfirmationLine>>?>(null) }
+
     // Observe side effects
     LaunchedEffect(Unit) {
         viewModel.sideEffect.collect { effect ->
@@ -103,47 +109,35 @@ fun CarbsDialogScreen(
                 }
 
                 is CarbsDialogViewModel.SideEffect.ShowNoActionDialog -> {
-                    // handled via showNoAction local state
+                    showNoAction = true
+                }
+
+                is CarbsDialogViewModel.SideEffect.ShowConfirmation -> {
+                    confirmation = effect.bolusId to effect.lines
                 }
             }
         }
     }
 
-    // Dialog states (rememberSaveable to survive rotation)
-    var showConfirmation by rememberSaveable { mutableStateOf(false) }
-    var showNoAction by rememberSaveable { mutableStateOf(false) }
-    var showDatePicker by rememberSaveable { mutableStateOf(false) }
-    var showTimePicker by rememberSaveable { mutableStateOf(false) }
-    var showButtonSettings by rememberSaveable { mutableStateOf(false) }
-
-    // Confirmation dialog
-    if (showConfirmation) {
-        if (!viewModel.hasAction()) {
-            showConfirmation = false
-            showNoAction = true
-        } else {
-            val summaryLines = viewModel.buildConfirmationSummary()
-            OkCancelDialog(
-                title = stringResource(CoreUiR.string.carbs),
-                message = summaryLines.joinToString("<br/>"),
-                icon = ElementType.CARBS.icon(),
-                iconTint = ElementType.CARBS.color(),
-                onConfirm = {
-                    viewModel.confirmAndSave()
-                    onNavigateBack()
-                },
-                onDismiss = { showConfirmation = false }
-            )
-        }
+    // Confirmation dialog — renders the MASTER's prepared lines (set via the ShowConfirmation side effect after prepare()).
+    confirmation?.let { (bolusId, lines) ->
+        ElementConfirmationDialog(
+            elementType = ElementType.CARBS,
+            lines = lines,
+            onConfirm = {
+                viewModel.commit(bolusId)
+                confirmation = null
+                onNavigateBack()
+            },
+            onDismiss = { confirmation = null }
+        )
     }
 
     // No action dialog
     if (showNoAction) {
-        OkCancelDialog(
-            title = stringResource(CoreUiR.string.carbs),
+        ElementConfirmationDialog(
+            elementType = ElementType.CARBS,
             message = stringResource(CoreUiR.string.no_action_selected),
-            icon = ElementType.CARBS.icon(),
-            iconTint = ElementType.CARBS.color(),
             onConfirm = { showNoAction = false },
             onDismiss = { showNoAction = false }
         )
@@ -201,7 +195,7 @@ fun CarbsDialogScreen(
             { showButtonSettings = true }
         },
         onNavigateBack = onNavigateBack,
-        onConfirmClick = { showConfirmation = true }
+        onConfirmClick = { viewModel.prepareAndConfirm() }
     )
 }
 
@@ -234,23 +228,12 @@ private fun CarbsDialogContent(
     Scaffold(
         topBar = {
             AapsTopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = ElementType.CARBS.icon(),
-                            contentDescription = null,
-                            tint = ElementType.CARBS.color(),
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Spacer(modifier = Modifier.padding(start = 8.dp))
-                        Text(stringResource(ElementType.CARBS.labelResId()))
-                    }
-                },
+                title = { Text(stringResource(ElementType.CARBS.labelResId())) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = stringResource(CoreUiR.string.back)
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = stringResource(CoreUiR.string.close)
                         )
                     }
                 },
@@ -270,11 +253,14 @@ private fun CarbsDialogContent(
         bottomBar = {
             val hasAction = uiState.carbs != 0 || uiState.hypoTtChecked || uiState.eatingSoonTtChecked || uiState.activityTtChecked
             Button(
-                onClick = onConfirmClick,
+                onClick = {
+                    focusManager.clearFocus()
+                    onConfirmClick()
+                },
                 enabled = hasAction,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .imePadding()
+                    .bottomBarSafeArea()
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
                 Icon(
@@ -301,6 +287,7 @@ private fun CarbsDialogContent(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+                .consumeOverscroll()
                 .verticalScroll(rememberScrollState())
                 .clearFocusOnTap(focusManager)
                 .padding(horizontal = 16.dp, vertical = 8.dp),
@@ -337,11 +324,20 @@ private fun CarbsDialogContent(
                             labelResId = CoreUiR.string.carbs,
                             value = uiState.carbs.toDouble(),
                             onValueChange = onCarbsChange,
-                            valueRange = (-uiState.maxCarbs).toDouble()..uiState.maxCarbs.toDouble(),
+                            // Lower bound = -COB (can't remove more than is on board); at COB 0 the minimum is 0.
+                            valueRange = (-uiState.cobLimit).toDouble()..uiState.maxCarbs.toDouble(),
                             step = 1.0,
                             valueFormat = DecimalFormat("0"),
                             unitLabel = stringResource(CoreUiR.string.shortgramm)
                         )
+                        // Removing carbs (negative): show the COB-bounded limit so the user understands why it can't go lower.
+                        if (uiState.carbs < 0) {
+                            Text(
+                                text = stringResource(CoreUiR.string.carbs_removal_cob_limit, uiState.cobLimit),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         QuickAddButtons(
                             increment1 = uiState.carbsButtonIncrement1,
                             increment2 = uiState.carbsButtonIncrement2,
@@ -389,7 +385,8 @@ private fun CarbsDialogContent(
                         onOffsetChange = { onTimeOffsetChange(it.toDouble()) },
                         onAlarmChange = onAlarmChange,
                         resolvedTimeText = if (uiState.timeOffsetMinutes != 0) timeString else null,
-                        offsetRange = -7 * 24 * 60..12 * 60,
+                        // Negative carbs (COB removal) can't be future-dated — cap the forward range at 0 (now).
+                        offsetRange = -7 * 24 * 60..(if (uiState.carbs < 0) 0 else 12 * 60),
                         dateTimeContent = {
                             DateTimeSection(
                                 dateString = dateString,
@@ -421,6 +418,7 @@ private fun CarbsDialogContent(
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun CarbsDialogScreenPreview() {
@@ -458,7 +456,6 @@ private fun CarbsDialogScreenPreview() {
         )
     }
 }
-
 
 @Composable
 private fun TempTargetCheckboxes(
@@ -518,29 +515,6 @@ private fun TempTargetCheckboxes(
     }
 }
 
-@Composable
-private fun QuickAddButtons(
-    increment1: Int,
-    increment2: Int,
-    increment3: Int,
-    onAddCarbs: (Int) -> Unit
-) {
-    val increments = listOf(increment1, increment2, increment3).filter { it > 0 }
-    if (increments.isEmpty()) return
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        increments.forEach { amount ->
-            FilledTonalButton(onClick = { onAddCarbs(amount) }) {
-                Text("+$amount")
-            }
-        }
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CarbsButtonSettingsSheet(
@@ -554,19 +528,10 @@ private fun CarbsButtonSettingsSheet(
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface
     ) {
-        Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
-            Text(
-                text = stringResource(settingsDef.titleResId),
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp)
-            )
-            ProvidePreferenceTheme {
-                AdaptivePreferenceList(
-                    items = settingsDef.items
-                )
-            }
-        }
+        PreferenceSheetContent(
+            settingsDef = settingsDef,
+            modifier = Modifier.padding(bottom = 24.dp)
+        )
     }
 }
 

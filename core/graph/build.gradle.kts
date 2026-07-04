@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.compose.compiler)
     id("android-module-dependencies")
     id("test-module-dependencies")
+    id("compose-test-module-dependencies")
     id("jacoco-module-dependencies")
 }
 
@@ -17,15 +18,15 @@ android {
 
 dependencies {
     implementation(project(":core:data"))
-    implementation(project(":core:graphview"))
     implementation(project(":core:interfaces"))
-    implementation(project(":core:keys"))
     implementation(project(":core:objects"))
     implementation(project(":core:ui"))
+
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    debugImplementation(libs.androidx.compose.ui.tooling)
 
     api(platform(libs.androidx.compose.bom))
     api(libs.androidx.compose.runtime)
     api(libs.androidx.ui)
     api(libs.com.patrykandpatrick.vico.compose)
-    api(libs.com.patrykandpatrick.vico.compose.m3)
 }

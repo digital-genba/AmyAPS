@@ -2,33 +2,54 @@ package app.aaps.ui.compose.insulinManagement
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.aaps.core.data.model.EPS
 import app.aaps.core.data.model.ICfg
-import app.aaps.core.data.time.T
 import app.aaps.core.data.ue.Action
 import app.aaps.core.data.ue.Sources
 import app.aaps.core.data.ue.ValueWithUnit
+import app.aaps.core.data.ui.ConfirmationLine
+import app.aaps.core.interfaces.bolus.BatchAction
+import app.aaps.core.interfaces.bolus.BatchExecutor
+import app.aaps.core.interfaces.clientcontrol.ActionProgress
+import app.aaps.core.ui.clientcontrol.failTextResId
+import app.aaps.core.interfaces.clientcontrol.FailureReason
+import app.aaps.core.interfaces.configuration.Config
+import app.aaps.core.interfaces.db.PersistenceLayer
+import app.aaps.core.interfaces.db.compensateForClockSkew
+import app.aaps.core.interfaces.db.observeChanges
+import app.aaps.core.interfaces.di.ApplicationScope
 import app.aaps.core.interfaces.insulin.ConcentrationType
 import app.aaps.core.interfaces.insulin.InsulinManager
 import app.aaps.core.interfaces.insulin.InsulinType
 import app.aaps.core.interfaces.logging.UserEntryLogger
 import app.aaps.core.interfaces.profile.ProfileFunction
+import app.aaps.core.interfaces.profile.ProfileRepository
 import app.aaps.core.interfaces.resources.ResourceHelper
+import app.aaps.core.interfaces.rx.bus.RxBus
+import app.aaps.core.interfaces.rx.events.EventShowSnackbar
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.HardLimits
 import app.aaps.core.keys.BooleanKey
+import app.aaps.core.keys.StringNonKey
 import app.aaps.core.keys.interfaces.Preferences
-import app.aaps.core.objects.profile.ProfileSealed
+import app.aaps.core.objects.extensions.observeChange
 import app.aaps.core.ui.compose.ScreenMode
-import app.aaps.core.ui.compose.SnackbarMessage
 import app.aaps.ui.R
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import app.aaps.core.ui.R as CoreUiR
 
@@ -40,48 +61,69 @@ class InsulinManagementViewModel @Inject constructor(
     private val dateUtil: DateUtil,
     private val hardLimits: HardLimits,
     private val uel: UserEntryLogger,
-    val rh: ResourceHelper
+    val rh: ResourceHelper,
+    private val rxBus: RxBus,
+    private val persistenceLayer: PersistenceLayer,
+    private val profileRepository: ProfileRepository,
+    private val config: Config,
+    private val batchExecutor: BatchExecutor,
+    @ApplicationScope private val appScope: CoroutineScope
 ) : ViewModel() {
 
-    val uiState: StateFlow<InsulinManagementUiState>
-        field = MutableStateFlow(InsulinManagementUiState())
-
-    val sideEffect: SharedFlow<SideEffect>
-        field = MutableSharedFlow(
-            replay = 0,
-            extraBufferCapacity = 1,
-            onBufferOverflow = BufferOverflow.DROP_OLDEST
-        )
+    private val _uiState = MutableStateFlow(InsulinManagementUiState())
+    val uiState: StateFlow<InsulinManagementUiState> = _uiState.asStateFlow()
 
     sealed class SideEffect {
         data class ScrollToInsulin(val index: Int) : SideEffect()
         data object NavigateBack : SideEffect()
+
+        /** The MASTER prepared the activation and returned its confirmation [lines]; show them, then [commit] [bolusId]. */
+        data class ShowConfirmation(val bolusId: Long, val lines: List<ConfirmationLine>) : SideEffect()
     }
 
+    private val _sideEffect = MutableSharedFlow<SideEffect>(
+        replay = 0,
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val sideEffect: SharedFlow<SideEffect> = _sideEffect.asSharedFlow()
+
+    // Last InsulinConfiguration value this VM has accounted for. Lets [onExternalConfigChange] tell
+    // our own saves (which also write the pref) apart from external client→master sync pushes.
+    private var lastAppliedConfig: String = ""
+
+    // Guards [prepareActivation] against re-taps while a prepare round-trip is still in flight, so a
+    // double-tap on Activate can't launch two concurrent prepares.
+    private val activating = AtomicBoolean(false)
+
     init {
+        lastAppliedConfig = preferences.get(StringNonKey.InsulinConfiguration)
         loadData()
+        observeProfileChanges()
+        observeConfigChanges()
     }
 
     fun setScreenMode(mode: ScreenMode) {
-        uiState.update { it.copy(screenMode = mode) }
+        _uiState.update { it.copy(screenMode = mode) }
+        loadData(reload = true)
     }
 
     fun loadData(targetIndex: Int? = null, reload: Boolean = true, autoName: Boolean = false, saveAfterAutoName: Boolean = false) {
         viewModelScope.launch {
             if (reload) insulinManager.loadSettings()
             val insulins = insulinManager.insulins.map { it.deepClone() }
-            val activeLabel = profileFunction.getProfile()?.iCfg?.insulinLabel
+            val activeICfg = profileFunction.getProfile()?.iCfg
+            val activeLabel = activeICfg?.insulinLabel
             val activeConcentration = profileFunction.getProfile()?.iCfg?.concentration ?: 1.0  // Only insulin with Current Active concentration can be set from Insulin Management
-
-            val currentIndex = (targetIndex ?: uiState.value.currentCardIndex).coerceIn(0, (insulins.size - 1).coerceAtLeast(0))
+            val currentIndex = (if (reload) insulinManager.insulinIndex(activeICfg) else targetIndex ?: uiState.value.currentCardIndex)
+                .coerceIn(0, (insulins.size - 1).coerceAtLeast(0))
             val currentICfg = insulins.getOrNull(currentIndex)
             val template = currentICfg?.let { cfg -> InsulinType.fromPeak(cfg.insulinPeakTime) }
             val defaultNickname = template?.let { rh.gs(it.label) } ?: ""
             val editorNickname = currentICfg?.insulinNickname?.takeIf { it.isNotBlank() } ?: defaultNickname
             val autoNameEnabled = editorNickname == defaultNickname || autoName
 
-
-            uiState.update {
+            _uiState.update {
                 it.copy(
                     insulins = insulins,
                     currentCardIndex = currentIndex,
@@ -101,8 +143,64 @@ class InsulinManagementViewModel @Inject constructor(
                 autoGenerateName()
                 if (saveAfterAutoName) saveCurrentInsulin()
             }
-            targetIndex?.let { sideEffect.emit(SideEffect.ScrollToInsulin(it)) }
+            targetIndex?.let { _sideEffect.emit(SideEffect.ScrollToInsulin(it)) }
         }
+    }
+
+    /**
+     * Subscribe to profile change events
+     */
+    private fun observeProfileChanges() {
+        // Drop the replayed initial value; only react to subsequent profile-list mutations.
+        profileRepository.profiles.drop(1)
+            .onEach { updateRunningInsulin() }.launchIn(viewModelScope)
+        persistenceLayer.observeChanges<EPS>()
+            .compensateForClockSkew(config, dateUtil)
+            .onEach { updateRunningInsulin() }.launchIn(viewModelScope)
+    }
+
+    private suspend fun updateRunningInsulin() {
+        val now = dateUtil.now()
+        val activeIcfg = persistenceLayer.getEffectiveProfileSwitchActiveAt(now)?.iCfg
+        _uiState.update { it.copy(activeInsulinLabel = activeIcfg?.insulinLabel) }
+    }
+
+    /**
+     * React to external [StringNonKey.InsulinConfiguration] changes (the master applying a client
+     * push, or a client receiving the master's republish). Our own saves are filtered out via
+     * [lastAppliedConfig], so this only fires for genuinely external updates.
+     */
+    private fun observeConfigChanges() {
+        preferences.observeChange(StringNonKey.InsulinConfiguration)
+            .onEach { onExternalConfigChange() }
+            .launchIn(viewModelScope)
+    }
+
+    private fun onExternalConfigChange() {
+        val incoming = preferences.get(StringNonKey.InsulinConfiguration)
+        if (incoming == lastAppliedConfig) return // our own write echoing back
+        lastAppliedConfig = incoming
+        // reload = true: the apply that triggered this ran insulinManager.loadSettings()/reloadInternalState()
+        // on a background (WS) thread, so the in-memory list isn't reliably visible here — re-read the
+        // pref via the synchronized loadSettings(). lastAppliedConfig keeps the re-store from looping.
+        when {
+            // Client defers to the master: adopt the new definitions silently (discards unsaved edits).
+            config.AAPSCLIENT   -> loadData(reload = true)
+            // Master is the conflict authority: ask before discarding an in-progress edit.
+            hasUnsavedChanges() -> _uiState.update { it.copy(externalUpdatePending = true) }
+            else                -> loadData(reload = true)
+        }
+    }
+
+    /** Master chose to load the externally-changed definitions, discarding the unsaved edit. */
+    fun acceptExternalUpdate() {
+        _uiState.update { it.copy(externalUpdatePending = false) }
+        loadData(reload = true)
+    }
+
+    /** Master chose to keep editing; the external change stays applied underneath and the next save wins. */
+    fun dismissExternalUpdate() {
+        _uiState.update { it.copy(externalUpdatePending = false) }
     }
 
     fun refreshData() {
@@ -110,7 +208,7 @@ class InsulinManagementViewModel @Inject constructor(
             insulinManager.loadSettings()
             val insulins = insulinManager.insulins.map { it.deepClone() }
             val activeLabel = profileFunction.getProfile()?.iCfg?.insulinLabel
-            uiState.update {
+            _uiState.update {
                 it.copy(
                     insulins = insulins,
                     activeInsulinLabel = activeLabel
@@ -122,7 +220,7 @@ class InsulinManagementViewModel @Inject constructor(
     fun updateCurrentCardIndex(index: Int) {
         if (index == uiState.value.currentCardIndex) return
         if (hasUnsavedChanges()) {
-            uiState.update { it.copy(pendingNavigation = PendingNavigation.CardSwitch(index)) }
+            _uiState.update { it.copy(pendingNavigation = PendingNavigation.CardSwitch(index)) }
             return
         }
         applyCardSwitch(index)
@@ -136,7 +234,7 @@ class InsulinManagementViewModel @Inject constructor(
         val defaultNickname = rh.gs(editorTemplate.label)
         val autoNameEnabled = editorNickname == defaultNickname
 
-        uiState.update {
+        _uiState.update {
             it.copy(
                 currentCardIndex = index,
                 pendingNavigation = null,
@@ -152,10 +250,10 @@ class InsulinManagementViewModel @Inject constructor(
 
     fun requestBack() {
         if (hasUnsavedChanges()) {
-            uiState.update { it.copy(pendingNavigation = PendingNavigation.Back) }
+            _uiState.update { it.copy(pendingNavigation = PendingNavigation.Back) }
         } else {
-            uiState.update { it.copy(pendingNavigation = null) }
-            viewModelScope.launch { sideEffect.emit(SideEffect.NavigateBack) }
+            _uiState.update { it.copy(pendingNavigation = null) }
+            viewModelScope.launch { _sideEffect.emit(SideEffect.NavigateBack) }
         }
     }
 
@@ -164,9 +262,10 @@ class InsulinManagementViewModel @Inject constructor(
         if (saveCurrentInsulin()) {
             when (pending) {
                 is PendingNavigation.CardSwitch -> applyCardSwitch(pending.targetIndex)
+
                 is PendingNavigation.Back       -> {
-                    uiState.update { it.copy(pendingNavigation = null) }
-                    viewModelScope.launch { sideEffect.emit(SideEffect.NavigateBack) }
+                    _uiState.update { it.copy(pendingNavigation = null) }
+                    viewModelScope.launch { _sideEffect.emit(SideEffect.NavigateBack) }
                 }
 
                 null                            -> Unit
@@ -175,12 +274,12 @@ class InsulinManagementViewModel @Inject constructor(
     }
 
     fun discardAndProceed() {
-        val pending = uiState.value.pendingNavigation
-        when (pending) {
+        when (val pending = uiState.value.pendingNavigation) {
             is PendingNavigation.CardSwitch -> applyCardSwitch(pending.targetIndex)
+
             is PendingNavigation.Back       -> {
-                uiState.update { it.copy(pendingNavigation = null) }
-                viewModelScope.launch { sideEffect.emit(SideEffect.NavigateBack) }
+                _uiState.update { it.copy(pendingNavigation = null) }
+                viewModelScope.launch { _sideEffect.emit(SideEffect.NavigateBack) }
             }
 
             null                            -> Unit
@@ -188,7 +287,7 @@ class InsulinManagementViewModel @Inject constructor(
     }
 
     fun dismissPendingNavigation() {
-        uiState.update { it.copy(pendingNavigation = null) }
+        _uiState.update { it.copy(pendingNavigation = null) }
     }
 
     fun hasUnsavedChanges(): Boolean {
@@ -206,20 +305,21 @@ class InsulinManagementViewModel @Inject constructor(
     // Editor field updates
 
     fun updateEditorNickname(nickname: String) {
-        uiState.update {
+        _uiState.update {
             it.copy(
                 autoNameEnabled = false,
-                editorNickname = nickname)
+                editorNickname = nickname
+            )
         }
     }
 
     fun updateEditorConcentration(concentration: ConcentrationType) {
-        uiState.update { it.copy(editorConcentration = concentration) }
+        _uiState.update { it.copy(editorConcentration = concentration) }
     }
 
     fun updateEditorPeak(peakMinutes: Int) {
         val editorTemplate = InsulinType.fromPeak(peakMinutes.toLong() * 60_000L)
-        uiState.update {
+        _uiState.update {
             it.copy(
                 editorTemplate = editorTemplate,
                 editorPeakMinutes = peakMinutes
@@ -230,12 +330,12 @@ class InsulinManagementViewModel @Inject constructor(
     }
 
     fun updateEditorDia(diaHours: Double) {
-        uiState.update { it.copy(editorDiaHours = diaHours) }
+        _uiState.update { it.copy(editorDiaHours = diaHours) }
     }
 
     /** Load peak from a preset template (chips UI). Only sets peak, not DIA. */
     fun loadPeakFromPreset(preset: InsulinType) {
-        uiState.update {
+        _uiState.update {
             it.copy(
                 editorTemplate = preset,
                 editorPeakMinutes = preset.iCfg.peak,
@@ -247,7 +347,7 @@ class InsulinManagementViewModel @Inject constructor(
 
     fun autoGenerateName() {
         val newDefaultNickname = rh.gs((uiState.value.editorTemplate ?: InsulinType.fromPeak(uiState.value.editorPeakMinutes.toLong() * 60_000L)).label)
-        uiState.update { it.copy(editorNickname = newDefaultNickname) }
+        _uiState.update { it.copy(editorNickname = newDefaultNickname) }
     }
 
     // CRUD operations
@@ -261,12 +361,27 @@ class InsulinManagementViewModel @Inject constructor(
             return false
         }
 
+        // Resolve the write target in the AUTHORITATIVE live list by the identity (label) of the entry
+        // the editor was bound to — never by a raw index into the UI snapshot. An external sync push the
+        // master chose to keep editing over can have reordered or removed entries underneath us, so an
+        // index into the stale snapshot could otherwise redirect the edit onto a different insulin or
+        // drop it silently. buildFullName/uniqueness below use this same live-list index.
+        val originalLabel = state.insulins.getOrNull(state.currentCardIndex)?.insulinLabel
+        val targetIndex = insulinManager.insulins.indexOfFirst { it.insulinLabel == originalLabel }
+        if (targetIndex < 0) {
+            // The insulin we were editing no longer exists (removed by an external sync). Surface it and
+            // reload rather than silently reporting success on a write that goes nowhere.
+            showSnackbar(rh.gs(R.string.insulin_edit_target_gone))
+            loadData(reload = true)
+            return false
+        }
+
         val fullName = insulinManager.buildFullName(
             nickname = nickname,
             peak = state.editorPeakMinutes,
             dia = state.editorDiaHours,
             concentration = state.editorConcentration.value,
-            excludeIndex = state.currentCardIndex
+            excludeIndex = targetIndex
         )
 
         val editedICfg = ICfg(
@@ -289,24 +404,23 @@ class InsulinManagementViewModel @Inject constructor(
             return false
         }
 
-        // Check name uniqueness
-        val existingIndex = state.insulins.indexOfFirst { it.insulinLabel == editedICfg.insulinLabel }
-        if (existingIndex >= 0 && existingIndex != state.currentCardIndex) {
+        // Check name uniqueness against the live list (same source as the write target).
+        val existingIndex = insulinManager.insulins.indexOfFirst { it.insulinLabel == editedICfg.insulinLabel }
+        if (existingIndex >= 0 && existingIndex != targetIndex) {
             showSnackbar(rh.gs(R.string.insulin_name_exists, editedICfg.insulinLabel))
             return false
         }
 
         // Apply to plugin
-        val stored = insulinManager.insulins.getOrNull(state.currentCardIndex)
-        if (stored != null) {
-            stored.insulinLabel = editedICfg.insulinLabel
-            stored.insulinEndTime = editedICfg.insulinEndTime
-            stored.insulinPeakTime = editedICfg.insulinPeakTime
-            stored.concentration = editedICfg.concentration
-            stored.insulinNickname = editedICfg.insulinNickname
-            uel.log(Action.STORE_INSULIN, Sources.Insulin, value = ValueWithUnit.SimpleString(editedICfg.insulinLabel))
-        }
+        val stored = insulinManager.insulins[targetIndex]
+        stored.insulinLabel = editedICfg.insulinLabel
+        stored.insulinEndTime = editedICfg.insulinEndTime
+        stored.insulinPeakTime = editedICfg.insulinPeakTime
+        stored.concentration = editedICfg.concentration
+        stored.insulinNickname = editedICfg.insulinNickname
+        uel.log(Action.STORE_INSULIN, Sources.Insulin, value = ValueWithUnit.SimpleString(editedICfg.insulinLabel))
         insulinManager.storeSettings()
+        lastAppliedConfig = preferences.get(StringNonKey.InsulinConfiguration) // mark as our own write
         loadData(reload = false)
         return true
     }
@@ -317,6 +431,7 @@ class InsulinManagementViewModel @Inject constructor(
         val newICfg = source?.deepClone() ?: InsulinType.OREF_RAPID_ACTING.iCfg
         newICfg.insulinLabel = ""
         insulinManager.addNewInsulin(newICfg)
+        lastAppliedConfig = preferences.get(StringNonKey.InsulinConfiguration) // mark as our own write
         loadData(targetIndex = insulinManager.currentInsulinIndex, reload = false, autoName = state.autoNameEnabled, saveAfterAutoName = true)
     }
 
@@ -334,54 +449,53 @@ class InsulinManagementViewModel @Inject constructor(
 
         insulinManager.currentInsulinIndex = state.currentCardIndex
         insulinManager.removeCurrentInsulin()
+        lastAppliedConfig = preferences.get(StringNonKey.InsulinConfiguration) // mark as our own write
         loadData(reload = false)
         return true
     }
 
+    /**
+     * Ask the MASTER to PREPARE the insulin activation (validate it has an active profile to re-apply, author the
+     * confirmation). Client = signed round-trip; master = local. The user confirms the master's exact lines and
+     * [commit] applies it. appScope: the round-trip can outlive the screen.
+     */
     fun prepareActivation() {
-        viewModelScope.launch {
-            val state = uiState.value
-            val iCfg = state.insulins.getOrNull(state.currentCardIndex) ?: return@launch
-            val profile = profileFunction.getProfile()
-            if (profile == null) {
-                showSnackbar(rh.gs(R.string.activate_insulin_no_profile))
-                return@launch
+        // Ignore re-taps while a prepare is already in flight (the round-trip can take a moment on a client).
+        if (!activating.compareAndSet(false, true)) return
+        appScope.launch {
+            try {
+                val state = uiState.value
+                val iCfg = state.insulins.getOrNull(state.currentCardIndex) ?: return@launch
+                val label = rh.gs(CoreUiR.string.activate_insulin)
+                when (val prepared = batchExecutor.prepare(listOf(BatchAction.InsulinActivate(iCfg)), Sources.Insulin, label)) {
+                    is ActionProgress.Prepared -> _sideEffect.emit(SideEffect.ShowConfirmation(prepared.id, prepared.lines))
+                    // Offline block (and a master-local failure, e.g. no active profile) surface here; a client round-trip
+                    // failure already showed on the app-level modal.
+                    is ActionProgress.Rejected ->
+                        if (prepared.reason == FailureReason.NotReachable || prepared.reason == FailureReason.ControlDisabled) showSnackbar(rh.gs(prepared.reason.failTextResId()))
+                        else prepared.detail?.let { showSnackbar(it) }
+
+                    else                       -> Unit // Unconfirmed → app-level modal
+                }
+            } finally {
+                activating.set(false)
             }
-
-            val eps = (profile as? ProfileSealed.EPS)?.value
-            val profileName = eps?.originalProfileName ?: return@launch
-            val percentage = eps.originalPercentage
-            val timeshiftHours = T.msecs(eps.originalTimeshift).hours().toInt()
-            val durationMs = eps.originalDuration
-
-            val details = mutableListOf<String>()
-            details.add(profileName)
-            if (percentage != 100) details.add(rh.gs(CoreUiR.string.format_percent, percentage))
-            if (timeshiftHours != 0) details.add(rh.gs(CoreUiR.string.format_hours, timeshiftHours.toDouble()))
-            if (durationMs > 0) {
-                val remaining = ((durationMs - (dateUtil.now() - eps.timestamp)) / 60_000L).coerceAtLeast(0)
-                if (remaining > 0)
-                    details.add(rh.gs(R.string.activate_insulin_remaining, remaining.toInt()))
-            }
-
-            val message = rh.gs(R.string.activate_insulin_new_insulin, iCfg.insulinLabel) +
-                "\n\n" + rh.gs(R.string.activate_insulin_profile_switch, details.joinToString(", "))
-
-            uiState.update { it.copy(activationMessage = message) }
         }
     }
 
-    fun dismissActivation() {
-        uiState.update { it.copy(activationMessage = null) }
-    }
+    /** Confirm the master's prepared activation: apply it exactly once. On Applied: confirm + refresh (client chip follows sync-back). */
+    fun commit(bolusId: Long) {
+        appScope.launch {
+            val result = batchExecutor.commit(bolusId, Sources.Insulin, rh.gs(CoreUiR.string.activate_insulin))
+            when {
+                result is ActionProgress.Applied                                                 -> {
+                    showSnackbar(rh.gs(R.string.insulin_activation_applied), EventShowSnackbar.Type.Info)
+                    refreshData()
+                }
 
-    fun executeActivation() {
-        uiState.update { it.copy(activationMessage = null) }
-        viewModelScope.launch {
-            val state = uiState.value
-            val iCfg = state.insulins.getOrNull(state.currentCardIndex) ?: return@launch
-            profileFunction.createProfileSwitchWithNewInsulin(iCfg, Sources.Insulin)
-            refreshData()
+                result is ActionProgress.Rejected && (result.reason == FailureReason.NotReachable || result.reason == FailureReason.ControlDisabled) -> showSnackbar(rh.gs(result.reason.failTextResId()))
+                result is ActionProgress.Rejected                                                -> result.detail?.let { showSnackbar(it) }
+            }
         }
     }
 
@@ -402,12 +516,8 @@ class InsulinManagementViewModel @Inject constructor(
         return iCfg
     }
 
-    fun clearSnackbar() {
-        uiState.update { it.copy(snackbarMessage = null) }
-    }
-
-    private fun showSnackbar(message: String) {
-        uiState.update { it.copy(snackbarMessage = SnackbarMessage.Error(message)) }
+    private fun showSnackbar(message: String, type: EventShowSnackbar.Type = EventShowSnackbar.Type.Error) {
+        rxBus.send(EventShowSnackbar(message, type))
     }
 
     /** Preset list for "Load peak from" chips — excludes FreePeak (not a real preset) */

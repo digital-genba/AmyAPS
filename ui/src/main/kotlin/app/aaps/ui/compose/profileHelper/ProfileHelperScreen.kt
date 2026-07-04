@@ -7,14 +7,13 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
@@ -52,20 +51,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.aaps.core.data.model.GlucoseUnit
+import app.aaps.core.graph.profile.ProfileCompareContent
+import app.aaps.core.graph.profile.buildBasalRows
+import app.aaps.core.graph.profile.buildIcRows
+import app.aaps.core.graph.profile.buildIsfRows
+import app.aaps.core.graph.profile.buildTargetRows
 import app.aaps.core.objects.profile.ProfileSealed
 import app.aaps.core.ui.compose.AapsTopAppBar
+import app.aaps.core.ui.compose.ExcludeFromJacocoGeneratedReport
 import app.aaps.core.ui.compose.NumberInputRow
+import app.aaps.core.ui.compose.bottomBarSafeArea
 import app.aaps.core.ui.compose.clearFocusOnTap
 import app.aaps.core.ui.compose.navigation.ElementType
-import app.aaps.core.ui.compose.navigation.color
-import app.aaps.core.ui.compose.navigation.icon
 import app.aaps.core.ui.compose.navigation.labelResId
 import app.aaps.ui.R
-import app.aaps.ui.compose.profileManagement.ProfileCompareContent
-import app.aaps.ui.compose.profileManagement.buildBasalRows
-import app.aaps.ui.compose.profileManagement.buildIcRows
-import app.aaps.ui.compose.profileManagement.buildIsfRows
-import app.aaps.ui.compose.profileManagement.buildTargetRows
 import app.aaps.ui.compose.profileManagement.viewmodels.ProfileHelperViewModel
 import app.aaps.ui.compose.stats.TddStatsCompose
 
@@ -87,7 +87,7 @@ fun ProfileHelperScreen(
     viewModel: ProfileHelperViewModel,
     onBackClick: () -> Unit
 ) {
-    val context = LocalContext.current
+    LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val focusManager = LocalFocusManager.current
 
@@ -146,7 +146,6 @@ fun ProfileHelperScreen(
         showCloneAction = showCloneAction,
         onCloneClick = {
             viewModel.copyToLocal(
-                context,
                 ages[cloneIndex],
                 tdds[cloneIndex],
                 weights[cloneIndex],
@@ -170,15 +169,14 @@ fun ProfileHelperScreen(
                 ProfileCompareContent(
                     profile1 = sealed1,
                     profile2 = sealed2,
-                    shortHourUnit = viewModel.rh.gs(app.aaps.core.interfaces.R.string.shorthour),
                     icsRows = buildIcRows(sealed1, sealed2, viewModel.dateUtil),
                     icUnits = viewModel.rh.gs(app.aaps.core.ui.R.string.profile_carbs_per_unit),
                     isfsRows = buildIsfRows(sealed1, sealed2, viewModel.profileUtil, viewModel.dateUtil),
-                    isfUnits = "${viewModel.getUnits().asText} ${viewModel.rh.gs(app.aaps.core.ui.R.string.profile_per_unit)}",
+                    isfUnits = viewModel.rh.gs(if (viewModel.getUnits() == GlucoseUnit.MGDL) app.aaps.core.ui.R.string.profile_isf_units_mgdl else app.aaps.core.ui.R.string.profile_isf_units_mmol),
                     basalsRows = buildBasalRows(sealed1, sealed2, viewModel.dateUtil),
                     basalUnits = viewModel.rh.gs(app.aaps.core.ui.R.string.profile_ins_units_per_hour),
                     targetsRows = buildTargetRows(sealed1, sealed2, viewModel.dateUtil, viewModel.profileUtil),
-                    targetUnits = viewModel.getUnits().asText,
+                    targetUnits = viewModel.getUnits().displayLabel,
                     profileName1 = name0,
                     profileName2 = name1
                 )
@@ -321,21 +319,10 @@ private fun ProfileHelperContent(
     Scaffold(
         topBar = {
             AapsTopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = ElementType.PROFILE_HELPER.icon(),
-                            contentDescription = null,
-                            tint = ElementType.PROFILE_HELPER.color(),
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Spacer(modifier = Modifier.padding(start = 8.dp))
-                        Text(stringResource(ElementType.PROFILE_HELPER.labelResId()))
-                    }
-                },
+                title = { Text(stringResource(ElementType.PROFILE_HELPER.labelResId())) },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(app.aaps.core.ui.R.string.back))
+                        Icon(Icons.Filled.Close, contentDescription = stringResource(app.aaps.core.ui.R.string.close))
                     }
                 },
                 actions = {}
@@ -343,11 +330,14 @@ private fun ProfileHelperContent(
         },
         bottomBar = {
             Button(
-                onClick = onCloneClick,
+                onClick = {
+                    focusManager.clearFocus()
+                    onCloneClick()
+                },
                 enabled = showCloneAction,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .imePadding()
+                    .bottomBarSafeArea()
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
                 Icon(
@@ -499,10 +489,6 @@ fun DefaultProfileContent(
             labelResId = app.aaps.core.ui.R.string.tdd_total,
             value = tdd,
             onValueChange = onTddChange,
-            onTextChange = { text ->
-                val parsed = text.trim().replace(",", ".").toDoubleOrNull() ?: 0.0
-                onTddChange(parsed.coerceIn(0.0..200.0))
-            },
             valueRange = 0.0..200.0,
             step = 1.0,
             unitLabelResId = app.aaps.core.keys.R.string.units_insulin
@@ -511,10 +497,6 @@ fun DefaultProfileContent(
             labelResId = R.string.weight_label,
             value = weight,
             onValueChange = onWeightChange,
-            onTextChange = { text ->
-                val parsed = text.trim().replace(",", ".").toDoubleOrNull() ?: 0.0
-                onWeightChange(parsed.coerceIn(0.0..150.0))
-            },
             valueRange = 0.0..150.0,
             step = 1.0,
             unitLabelResId = app.aaps.core.keys.R.string.units_kg
@@ -582,6 +564,7 @@ fun ProfileSwitchContent(profileSwitches: List<String>, selectedIndex: Int, onPr
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun ProfileHelperMotolPreview() {
@@ -625,6 +608,7 @@ private fun ProfileHelperMotolPreview() {
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun ProfileHelperCurrentPreview() {
@@ -658,6 +642,7 @@ private fun ProfileHelperCurrentPreview() {
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun DefaultProfileContentPreview() {
@@ -679,6 +664,7 @@ private fun DefaultProfileContentPreview() {
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun AvailableProfileContentPreview() {
@@ -692,6 +678,7 @@ private fun AvailableProfileContentPreview() {
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun ProfileSwitchContentPreview() {

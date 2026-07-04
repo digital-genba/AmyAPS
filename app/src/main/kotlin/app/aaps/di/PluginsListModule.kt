@@ -7,9 +7,8 @@ import app.aaps.plugins.aps.loop.LoopPlugin
 import app.aaps.plugins.aps.openAPSAMA.OpenAPSAMAPlugin
 import app.aaps.plugins.aps.openAPSAutoISF.OpenAPSAutoISFPlugin
 import app.aaps.plugins.aps.openAPSSMB.OpenAPSSMBPlugin
-import app.aaps.plugins.automation.AutomationPlugin
-import app.aaps.plugins.configuration.configBuilder.ConfigBuilderPlugin
-import app.aaps.plugins.configuration.maintenance.MaintenancePlugin
+import app.aaps.plugins.calibration.LinearCalibrationPlugin
+import app.aaps.plugins.calibration.NoCalibrationPlugin
 import app.aaps.plugins.constraints.bgQualityCheck.BgQualityCheckPlugin
 import app.aaps.plugins.constraints.dstHelper.DstHelperPlugin
 import app.aaps.plugins.constraints.objectives.ObjectivesPlugin
@@ -17,18 +16,16 @@ import app.aaps.plugins.constraints.safety.SafetyPlugin
 import app.aaps.plugins.constraints.signatureVerifier.SignatureVerifierPlugin
 import app.aaps.plugins.constraints.storage.StorageConstraintPlugin
 import app.aaps.plugins.constraints.versionChecker.VersionCheckerPlugin
-import app.aaps.plugins.main.general.actions.ActionsPlugin
-import app.aaps.plugins.main.general.food.FoodPlugin
-import app.aaps.plugins.main.general.overview.OverviewPlugin
 import app.aaps.plugins.main.general.persistentNotification.PersistentNotificationPlugin
 import app.aaps.plugins.main.iob.iobCobCalculator.IobCobCalculatorPlugin
-import app.aaps.plugins.main.profile.ProfilePlugin
 import app.aaps.plugins.sensitivity.SensitivityAAPSPlugin
 import app.aaps.plugins.sensitivity.SensitivityOref1Plugin
 import app.aaps.plugins.sensitivity.SensitivityWeightedAveragePlugin
 import app.aaps.plugins.smoothing.AvgSmoothingPlugin
 import app.aaps.plugins.smoothing.ExponentialSmoothingPlugin
 import app.aaps.plugins.smoothing.NoSmoothingPlugin
+import app.aaps.plugins.smoothing.UnscentedKalmanFilterPlugin
+import app.aaps.plugins.source.AidexPlugin
 import app.aaps.plugins.source.DexcomPlugin
 import app.aaps.plugins.source.GlimpPlugin
 import app.aaps.plugins.source.GlunovoPlugin
@@ -43,8 +40,8 @@ import app.aaps.plugins.source.RandomBgPlugin
 import app.aaps.plugins.source.SyaiPlugin
 import app.aaps.plugins.source.TomatoPlugin
 import app.aaps.plugins.source.XdripSourcePlugin
+import app.aaps.plugins.source.instara.InstaraPlugin
 import app.aaps.plugins.sync.garmin.GarminPlugin
-import app.aaps.plugins.sync.nsclient.NSClientPlugin
 import app.aaps.plugins.sync.nsclientV3.NSClientV3Plugin
 import app.aaps.plugins.sync.openhumans.OpenHumansUploaderPlugin
 import app.aaps.plugins.sync.smsCommunicator.SmsCommunicatorPlugin
@@ -76,20 +73,8 @@ abstract class PluginsListModule {
     @Binds
     @AllConfigs
     @IntoMap
-    @IntKey(5)
-    abstract fun bindOverviewPlugin(plugin: OverviewPlugin): PluginBase
-
-    @Binds
-    @AllConfigs
-    @IntoMap
     @IntKey(10)
     abstract fun bindIobCobCalculatorPlugin(plugin: IobCobCalculatorPlugin): PluginBase
-
-    @Binds
-    @AllConfigs
-    @IntoMap
-    @IntKey(20)
-    abstract fun bindActionsPlugin(plugin: ActionsPlugin): PluginBase
 
     @Binds
     @AllConfigs
@@ -148,18 +133,6 @@ abstract class PluginsListModule {
     @Binds
     @AllConfigs
     @IntoMap
-    @IntKey(240)
-    abstract fun bindLocalProfilePlugin(plugin: ProfilePlugin): PluginBase
-
-    @Binds
-    @AllConfigs
-    @IntoMap
-    @IntKey(250)
-    abstract fun bindAutomationPlugin(plugin: AutomationPlugin): PluginBase
-
-    @Binds
-    @AllConfigs
-    @IntoMap
     @IntKey(255)
     abstract fun bindAutotunePlugin(plugin: AutotunePlugin): PluginBase
 
@@ -198,18 +171,6 @@ abstract class PluginsListModule {
     @IntoMap
     @IntKey(310)
     abstract fun bindObjectivesPlugin(plugin: ObjectivesPlugin): PluginBase
-
-    @Binds
-    @AllConfigs
-    @IntoMap
-    @IntKey(320)
-    abstract fun bindFoodPlugin(plugin: FoodPlugin): PluginBase
-
-    @Binds
-    @AllConfigs
-    @IntoMap
-    @IntKey(350)
-    abstract fun bindNSClientPlugin(plugin: NSClientPlugin): PluginBase
 
     @Binds
     @AllConfigs
@@ -256,12 +217,6 @@ abstract class PluginsListModule {
     @Binds
     @AllConfigs
     @IntoMap
-    @IntKey(370)
-    abstract fun bindMaintenancePlugin(plugin: MaintenancePlugin): PluginBase
-
-    @Binds
-    @AllConfigs
-    @IntoMap
     @IntKey(380)
     abstract fun bindDstHelperPlugin(plugin: DstHelperPlugin): PluginBase
 
@@ -300,6 +255,12 @@ abstract class PluginsListModule {
     @IntoMap
     @IntKey(440)
     abstract fun bindDexcomPlugin(plugin: DexcomPlugin): PluginBase
+
+    @Binds
+    @AllConfigs
+    @IntoMap
+    @IntKey(445)
+    abstract fun bindAidexPlugin(plugin: AidexPlugin): PluginBase
 
     @Binds
     @AllConfigs
@@ -352,14 +313,14 @@ abstract class PluginsListModule {
     @Binds
     @AllConfigs
     @IntoMap
-    @IntKey(479)
-    abstract fun bindRandomBgPlugin(plugin: RandomBgPlugin): PluginBase
+    @IntKey(478)
+    abstract fun bindInstaraPlugin(plugin: InstaraPlugin): PluginBase
 
     @Binds
     @AllConfigs
     @IntoMap
-    @IntKey(490)
-    abstract fun bindConfigBuilderPlugin(plugin: ConfigBuilderPlugin): PluginBase
+    @IntKey(479)
+    abstract fun bindRandomBgPlugin(plugin: RandomBgPlugin): PluginBase
 
     @Binds
     @AllConfigs
@@ -378,6 +339,24 @@ abstract class PluginsListModule {
     @IntoMap
     @IntKey(610)
     abstract fun bindAvgSmoothingPlugin(plugin: AvgSmoothingPlugin): PluginBase
+
+    @Binds
+    @AllConfigs
+    @IntoMap
+    @IntKey(615)
+    abstract fun bindUnscentedKalmanFilterPlugin(plugin: UnscentedKalmanFilterPlugin): PluginBase
+
+    @Binds
+    @AllConfigs
+    @IntoMap
+    @IntKey(620)
+    abstract fun bindNoCalibrationPlugin(plugin: NoCalibrationPlugin): PluginBase
+
+    @Binds
+    @AllConfigs
+    @IntoMap
+    @IntKey(625)
+    abstract fun bindLinearCalibrationPlugin(plugin: LinearCalibrationPlugin): PluginBase
 
     @Qualifier
     annotation class AllConfigs

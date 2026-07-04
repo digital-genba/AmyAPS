@@ -1,22 +1,31 @@
 package app.aaps.core.interfaces.automation
 
-import androidx.annotation.DrawableRes
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+
+data class AutomationIconData(
+    val icon: ImageVector,
+    val tint: Color? = null
+)
 
 interface AutomationEvent {
 
     val id: String
     var isEnabled: Boolean
     var title: String
+
+    /** True when this event is exposed as a user-tappable action (Overview button / wear tile / quick-launch). */
+    var userAction: Boolean
     suspend fun canRun(): Boolean
     suspend fun preconditionCanRun(): Boolean
-    @DrawableRes fun firstActionIcon(): Int?
+    fun firstActionIcon(): AutomationIconData?
 
     /** Human-readable descriptions of each action (e.g. "Start temp target: 5.5 mmol 45 min") */
     fun actionsDescription(): List<String>
 
-    /** @return set of @DrawableRes trigger icon resource IDs (recursive from trigger tree) */
-    fun triggerIcons(): Set<Int>
+    /** @return set of trigger icons (recursive from trigger tree) */
+    fun triggerIcons(): Set<AutomationIconData>
 
-    /** @return set of @DrawableRes action icon resource IDs */
-    fun actionIcons(): Set<Int>
+    /** @return set of action icons */
+    fun actionIcons(): Set<AutomationIconData>
 }

@@ -151,13 +151,17 @@ class SearchIndexBuilder @Inject constructor(
         return entries
     }
 
+    /**
+     * A plugin (and therefore its settings screen/category and individual preference keys) is searchable only
+     * when it's visible in its list. E.g. VirtualPump's showInList is `{ !config.AAPSCLIENT }`, so on a client it
+     * and all its settings drop out of search — the values come from the master and aren't editable locally.
+     */
+    private fun PluginBase.isListVisible(): Boolean =
+        showInList(pluginDescription.mainType) && pluginDescription.pluginName != -1
+
     private fun collectPlugins(entries: MutableList<SearchIndexEntry>, seenKeys: MutableSet<String>) {
         activePlugin.getPluginsList()
-            .filter { plugin ->
-                // Only include plugins that are visible in at least one category
-                plugin.showInList(plugin.pluginDescription.mainType) &&
-                    plugin.pluginDescription.pluginName != -1
-            }
+            .filter { it.isListVisible() }
             .forEach { plugin ->
                 val item = SearchableItem.Plugin(plugin)
                 val entry = createIndexEntry(item)
@@ -169,21 +173,24 @@ class SearchIndexBuilder @Inject constructor(
     }
 
     private fun collectPluginScreens(entries: MutableList<SearchIndexEntry>, seenKeys: MutableSet<String>) {
-        activePlugin.getPluginsList().forEach { plugin ->
-            val content = plugin.getPreferenceScreenContent()
-            if (content is PreferenceSubScreenDef) {
-                // Add the screen itself
-                val screenItem = SearchableItem.Category(content, ownerPlugin = plugin)
-                val entry = createIndexEntry(screenItem)
-                val uniqueKey = "${entry.category.name}_${entry.item.key}"
-                if (seenKeys.add(uniqueKey)) {
-                    entries.add(entry)
-                }
+        activePlugin.getPluginsList()
+            // A plugin hidden from its list must not surface its settings screen/category in search either.
+            .filter { it.isListVisible() }
+            .forEach { plugin ->
+                val content = plugin.getPreferenceScreenContent()
+                if (content is PreferenceSubScreenDef) {
+                    // Add the screen itself
+                    val screenItem = SearchableItem.Category(content, ownerPlugin = plugin)
+                    val entry = createIndexEntry(screenItem)
+                    val uniqueKey = "${entry.category.name}_${entry.item.key}"
+                    if (seenKeys.add(uniqueKey)) {
+                        entries.add(entry)
+                    }
 
-                // Recursively collect nested screens
-                collectNestedScreens(content, plugin, entries, seenKeys)
+                    // Recursively collect nested screens
+                    collectNestedScreens(content, plugin, entries, seenKeys)
+                }
             }
-        }
     }
 
     private fun collectNestedScreens(screen: PreferenceSubScreenDef, plugin: PluginBase, entries: MutableList<SearchIndexEntry>, seenKeys: MutableSet<String>) {
@@ -200,21 +207,30 @@ class SearchIndexBuilder @Inject constructor(
         }
     }
 
-    private data class ParentScreenInfo(val key: String, val iconResId: Int?, val plugin: PluginBase?)
+    private data class ParentScreenInfo(val key: String, val plugin: PluginBase?)
 
     private fun collectPreferenceKeys(entries: MutableList<SearchIndexEntry>, seenKeys: MutableSet<String>) {
         // Get all preference keys from registered enums
         val allKeys = preferences.getAllPreferenceKeys()
 
-        // Build a map of preference key to parent screen info (key + icon + plugin)
+        // Build a map of preference key to parent screen info (screen key + owning plugin)
         val parentScreenMap = buildParentScreenMap()
 
         allKeys.forEach { prefKey ->
             // Skip keys with invalid title resource
             if (prefKey.titleResId == 0) return@forEach
 
+            // Skip keys not visible in the current build mode (mirror calculatePreferenceVisibility)
+            if (preferences.apsMode && !prefKey.showInApsMode) return@forEach
+            if (preferences.nsclientMode && !prefKey.showInNsClientMode) return@forEach
+            if (preferences.pumpControlMode && !prefKey.showInPumpControlMode) return@forEach
+
             val parentInfo = parentScreenMap[prefKey.key]
-            val item = SearchableItem.Preference(prefKey, parentInfo?.key, parentInfo?.iconResId, parentInfo?.plugin)
+            // Skip keys whose owning plugin is hidden from its list (e.g. VirtualPump on a client — its values
+            // come from the master, so its settings must not be searchable). Keys with no owning plugin pass.
+            val ownerPlugin = parentInfo?.plugin
+            if (ownerPlugin != null && !ownerPlugin.isListVisible()) return@forEach
+            val item = SearchableItem.Preference(prefKey, parentInfo?.key, parentInfo?.plugin)
             val entry = createIndexEntry(item)
             val uniqueKey = "${entry.category.name}_${entry.item.key}"
             if (seenKeys.add(uniqueKey)) {
@@ -230,7 +246,7 @@ class SearchIndexBuilder @Inject constructor(
         providers.forEach { provider ->
             provider.getSearchableItems().forEach { item ->
                 if (item is SearchableItem.Category) {
-                    collectPreferenceKeysFromScreen(item.screenDef, item.screenDef.key, item.screenDef.iconResId, null, map)
+                    collectPreferenceKeysFromScreen(item.screenDef, item.screenDef.key, null, map)
                 }
             }
         }
@@ -239,7 +255,7 @@ class SearchIndexBuilder @Inject constructor(
         activePlugin.getPluginsList().forEach { plugin ->
             val content = plugin.getPreferenceScreenContent()
             if (content is PreferenceSubScreenDef) {
-                collectPreferenceKeysFromScreen(content, content.key, content.iconResId, plugin, map)
+                collectPreferenceKeysFromScreen(content, content.key, plugin, map)
             }
         }
 
@@ -249,18 +265,14 @@ class SearchIndexBuilder @Inject constructor(
     private fun collectPreferenceKeysFromScreen(
         screen: PreferenceSubScreenDef,
         screenKey: String,
-        screenIconResId: Int?,
         plugin: PluginBase?,
         map: MutableMap<String, ParentScreenInfo>
     ) {
         screen.items.forEach { item ->
             when (item) {
-                is PreferenceKey          -> map[item.key] = ParentScreenInfo(screenKey, screenIconResId, plugin)
-                is PreferenceSubScreenDef -> {
-                    // Use subscreen's icon if available, otherwise inherit from parent
-                    val iconToUse = item.iconResId ?: screenIconResId
-                    collectPreferenceKeysFromScreen(item, item.key, iconToUse, plugin, map)
-                }
+                is PreferenceKey          -> map[item.key] = ParentScreenInfo(screenKey, plugin)
+
+                is PreferenceSubScreenDef -> collectPreferenceKeysFromScreen(item, item.key, plugin, map)
 
                 else                      -> { /* ignore other types */
                 }
@@ -295,7 +307,7 @@ class SearchIndexBuilder @Inject constructor(
     private fun safeGetString(resId: Int): String {
         return try {
             if (resId != 0) rh.gs(resId) else ""
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             ""
         }
     }
@@ -303,7 +315,7 @@ class SearchIndexBuilder @Inject constructor(
     private fun safeGetStringNotLocalised(resId: Int): String {
         return try {
             if (resId != 0) rh.gsNotLocalised(resId) else ""
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             ""
         }
     }

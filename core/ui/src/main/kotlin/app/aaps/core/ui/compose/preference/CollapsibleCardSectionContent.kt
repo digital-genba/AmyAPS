@@ -33,13 +33,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.aaps.core.ui.R
+import app.aaps.core.ui.compose.ExcludeFromJacocoGeneratedReport
 
 /**
  * Composable for a collapsible card section.
  * This is separated from the LazyListScope extension to avoid cross-module compilation issues
  * with @Composable lambda parameters.
- *
- * @param iconResId Optional drawable resource ID for the icon shown next to the title
  */
 @Composable
 fun CollapsibleCardSectionContent(
@@ -47,8 +46,8 @@ fun CollapsibleCardSectionContent(
     summaryItems: List<Int> = emptyList(),
     expanded: Boolean,
     onToggle: () -> Unit,
-    iconResId: Int? = null,
     icon: ImageVector? = null,
+    collapsible: Boolean = true,
     content: @Composable () -> Unit
 ) {
     val theme = LocalPreferenceTheme.current
@@ -68,12 +67,12 @@ fun CollapsibleCardSectionContent(
                 expanded = expanded,
                 onToggle = onToggle,
                 insideCard = true,
-                iconResId = iconResId,
-                icon = icon
+                icon = icon,
+                collapsible = collapsible
             )
 
             AnimatedVisibility(
-                visible = expanded,
+                visible = expanded || !collapsible,
                 enter = expandVertically(),
                 exit = shrinkVertically()
             ) {
@@ -85,6 +84,7 @@ fun CollapsibleCardSectionContent(
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun CollapsibleCardSectionContentPreview() {

@@ -1,8 +1,8 @@
 package app.aaps.ui.compose.overview.chips
 
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -24,10 +24,12 @@ import androidx.compose.ui.tooling.preview.Preview
 import app.aaps.core.data.model.TT
 import app.aaps.core.ui.compose.AapsSpacing
 import app.aaps.core.ui.compose.AapsTheme
+import app.aaps.core.ui.compose.ExcludeFromJacocoGeneratedReport
 import app.aaps.core.ui.compose.icons.IcTtActivity
 import app.aaps.core.ui.compose.icons.IcTtEatingSoon
 import app.aaps.core.ui.compose.icons.IcTtHypo
 import app.aaps.core.ui.compose.icons.IcTtManual
+import app.aaps.core.ui.compose.ttReasonColor
 import app.aaps.ui.compose.main.TempTargetChipState
 
 @Composable
@@ -37,7 +39,9 @@ fun TempTargetChip(
     progress: Float,
     reason: TT.Reason?,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    sceneManaged: Boolean = false,
+    enabled: Boolean = true
 ) {
     val iconColor = when (state) {
         TempTargetChipState.Active   -> reason.toIconColor()
@@ -54,16 +58,19 @@ fun TempTargetChip(
 
     Surface(
         onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onClick() },
+        enabled = enabled,
         shape = RoundedCornerShape(AapsSpacing.chipCornerRadius),
         color = containerColor,
         modifier = modifier
             .fillMaxWidth()
             .height(AapsSpacing.chipHeight)
     ) {
-        Column {
+        Box(modifier = Modifier.fillMaxSize()) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(horizontal = AapsSpacing.medium, vertical = AapsSpacing.small)
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = AapsSpacing.medium, vertical = AapsSpacing.small)
             ) {
                 Icon(
                     imageVector = reason.toIcon(),
@@ -73,37 +80,31 @@ fun TempTargetChip(
                 )
                 Text(
                     text = targetText,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = textColor,
                     modifier = Modifier.padding(start = AapsSpacing.medium)
                 )
-            }
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(AapsSpacing.chipProgressHeight)
-            ) {
-                if (progress > 0f) {
-                    LinearProgressIndicator(
-                        progress = { progress },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(AapsSpacing.chipProgressHeight),
-                        color = iconColor,
-                        trackColor = iconColor.copy(alpha = 0.3f)
-                    )
+                if (sceneManaged) {
+                    SceneBadge(modifier = Modifier.padding(start = AapsSpacing.small))
                 }
+            }
+            if (progress > 0f) {
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(AapsSpacing.chipProgressHeight),
+                    color = iconColor,
+                    trackColor = iconColor.copy(alpha = 0.3f)
+                )
             }
         }
     }
 }
 
 @Composable
-private fun TT.Reason?.toIconColor(): Color = when (this) {
-    TT.Reason.EATING_SOON  -> AapsTheme.generalColors.ttEatingSoon
-    TT.Reason.ACTIVITY     -> AapsTheme.generalColors.ttActivity
-    TT.Reason.HYPOGLYCEMIA -> AapsTheme.generalColors.ttHypoglycemia
-    else                   -> AapsTheme.generalColors.ttCustom // Custom, Automation, Wear, null
-}
+private fun TT.Reason?.toIconColor(): Color = ttReasonColor(AapsTheme.generalColors)
 
 private fun TT.Reason?.toIcon(): ImageVector = when (this) {
     TT.Reason.EATING_SOON  -> IcTtEatingSoon
@@ -112,6 +113,7 @@ private fun TT.Reason?.toIcon(): ImageVector = when (this) {
     else                   -> IcTtManual // Custom, Automation, Wear, null
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun TempTargetChipActivePreview() {
@@ -126,6 +128,7 @@ private fun TempTargetChipActivePreview() {
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun TempTargetChipNonePreview() {

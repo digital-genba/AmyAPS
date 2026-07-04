@@ -79,6 +79,7 @@ data class UserEntry(
         TT_NS_REFRESH,
         AUTOMATION_REMOVED,
         BG_REMOVED,
+        CALIBRATION_REMOVED,
         CAREPORTAL_REMOVED,
         EXTENDED_BOLUS_REMOVED,
         FOOD_REMOVED,
@@ -124,6 +125,9 @@ data class UserEntry(
         RUNNING_MODE,
         RUNNING_MODE_REMOVED,
         RUNNING_MODE_UPDATED,
+        SCENE_ACTIVATED,
+        SCENE_DEACTIVATED,
+        REMOTE_CONFIG_CHANGED,
         UNKNOWN
         ;
     }
@@ -203,7 +207,9 @@ data class UserEntry(
         SyaiTag,            //From Syai Tag plugin
         SiBionic,
         Sino,
+        Instara,            // From Instara plugin
         NotificationReader,
+        Scene,              //From Scene activation
         Stats,              //From Stat Activity
         Aaps,               // MainApp
         BgFragment,

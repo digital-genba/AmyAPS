@@ -11,8 +11,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -20,12 +18,15 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import app.aaps.core.ui.compose.AapsTopAppBar
 import app.aaps.core.ui.compose.ComposeScreenContent
 import app.aaps.core.ui.compose.LocalSnackbarHostState
+import app.aaps.core.ui.compose.MasterOfflineBanner
+import app.aaps.core.ui.compose.masterEditingEnabled
 import app.aaps.core.ui.compose.preference.LocalHighlightKey
 import app.aaps.core.ui.compose.preference.LocalNavigateToCompose
 import app.aaps.core.ui.compose.preference.PreferenceSubScreenDef
@@ -34,6 +35,7 @@ import app.aaps.core.ui.compose.preference.SectionLevel
 import app.aaps.core.ui.compose.preference.addPreferenceContent
 import app.aaps.core.ui.compose.preference.rememberPreferenceSectionState
 import app.aaps.core.ui.compose.preference.verticalScrollIndicators
+import kotlinx.coroutines.launch
 
 /**
  * Screen that displays a preference screen definition.
@@ -56,7 +58,11 @@ fun PreferenceScreenView(
     }
 
     val sectionState = rememberPreferenceSectionState()
-    val snackbarHostState = remember { SnackbarHostState() }
+    val snackbarHostState = LocalSnackbarHostState.current
+    val snackbarScope = rememberCoroutineScope()
+    val onShowMessage: (String) -> Unit = { message ->
+        snackbarScope.launch { snackbarHostState.showSnackbar(message) }
+    }
     var composeScreen: ComposeScreenContent? by remember { mutableStateOf(null) }
 
     // Auto-expand the main section
@@ -74,7 +80,6 @@ fun PreferenceScreenView(
     }
 
     CompositionLocalProvider(
-        LocalSnackbarHostState provides snackbarHostState,
         LocalHighlightKey provides highlightKey,
         LocalNavigateToCompose provides { screen -> composeScreen = screen }
     ) {
@@ -97,8 +102,7 @@ fun PreferenceScreenView(
                             }
                         }
                     )
-                },
-                snackbarHost = { SnackbarHost(snackbarHostState) }
+                }
             ) { paddingValues ->
                 val listState = rememberLazyListState()
                 LazyColumn(
@@ -108,8 +112,10 @@ fun PreferenceScreenView(
                         .verticalScrollIndicators(listState),
                     state = listState
                 ) {
+                    item { MasterOfflineBanner(editingEnabled = masterEditingEnabled()) }
                     addPreferenceContent(
                         content = screenDef,
+                        onShowMessage = onShowMessage,
                         sectionState = sectionState
                     )
                 }

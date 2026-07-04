@@ -13,13 +13,14 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import app.aaps.core.ui.compose.ExcludeFromJacocoGeneratedReport
 
 /**
  * Icon for Dana Pump Plugin.
  *
  * Bounding box: (viewport: 24x24, ~90% width)
  */
-val IcPluginDana: ImageVector by lazy {
+val IcPluginDanaI: ImageVector by lazy {
     ImageVector.Builder(
         name = "IcPluginDana",
         defaultWidth = 48.dp,
@@ -379,11 +380,12 @@ val IcPluginDana: ImageVector by lazy {
     }.build()
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun IcPluginDanaPreview() {
     Icon(
-        imageVector = IcPluginDana,
+        imageVector = IcPluginDanaI,
         contentDescription = "Dana Plugin Icon",
         modifier = Modifier
             .padding(0.dp)

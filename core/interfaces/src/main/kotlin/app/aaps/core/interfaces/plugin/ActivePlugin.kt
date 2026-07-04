@@ -4,16 +4,14 @@ import android.content.Context
 import app.aaps.core.data.plugin.PluginType
 import app.aaps.core.interfaces.aps.APS
 import app.aaps.core.interfaces.aps.Sensitivity
+import app.aaps.core.interfaces.calibration.Calibration
 import app.aaps.core.interfaces.constraints.Objectives
 import app.aaps.core.interfaces.constraints.Safety
 import app.aaps.core.interfaces.iob.IobCobCalculator
-import app.aaps.core.interfaces.overview.Overview
-import app.aaps.core.interfaces.profile.ProfileSource
 import app.aaps.core.interfaces.pump.Pump
 import app.aaps.core.interfaces.pump.PumpWithConcentration
 import app.aaps.core.interfaces.smoothing.Smoothing
 import app.aaps.core.interfaces.source.BgSource
-import app.aaps.core.interfaces.sync.NsClient
 import app.aaps.core.interfaces.sync.Sync
 
 interface ActivePlugin {
@@ -25,15 +23,10 @@ interface ActivePlugin {
     val activeBgSource: BgSource
 
     /**
-     *  Currently selected Profile plugin
-     */
-    val activeProfileSource: ProfileSource
-
-    /**
      *  Currently selected APS plugin
-     *  Default SMB
+     *  Default SMB. Null during early startup before plugin initialization.
      */
-    val activeAPS: APS
+    val activeAPS: APS?
 
     /**
      *  PumpWithConcentration should pass data to real Pump plugin if U100 is used
@@ -52,12 +45,6 @@ interface ActivePlugin {
      *  Default Oref1
      */
     val activeSensitivity: Sensitivity
-
-    /**
-     *  Currently selected Overview plugin
-     *  Always OverviewPlugin
-     */
-    val activeOverview: Overview
 
     /**
      *  Currently selected Safety plugin
@@ -82,9 +69,10 @@ interface ActivePlugin {
     val activeSmoothing: Smoothing
 
     /**
-     *  Currently selected NsClient plugin
+     *  Calibration plugin (per-sensor override on top of factory-calibrated values).
+     *  Defaults to no-op when no override plugin is enabled.
      */
-    val activeNsClient: NsClient?
+    val activeCalibration: Calibration
 
     /**
      *  Currently selected Sync plugin

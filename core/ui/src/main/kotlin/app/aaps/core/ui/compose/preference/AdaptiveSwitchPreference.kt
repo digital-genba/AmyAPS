@@ -4,9 +4,7 @@
 
 package app.aaps.core.ui.compose.preference
 
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -17,7 +15,10 @@ import androidx.compose.ui.tooling.preview.Preview
 import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.interfaces.BooleanKeyWithChangeGuard
 import app.aaps.core.keys.interfaces.BooleanPreferenceKey
-import app.aaps.core.keys.interfaces.PreferenceVisibilityContext
+import app.aaps.core.keys.interfaces.VisibilityContext
+import app.aaps.core.ui.R
+import app.aaps.core.ui.compose.ExcludeFromJacocoGeneratedReport
+import app.aaps.core.ui.compose.dialogs.OkDialog
 
 /**
  * Composable switch preference for use inside card sections.
@@ -33,7 +34,7 @@ fun AdaptiveSwitchPreferenceItem(
     summaryResId: Int? = null,
     summaryOnResId: Int? = null,
     summaryOffResId: Int? = null,
-    visibilityContext: PreferenceVisibilityContext? = null
+    visibilityContext: VisibilityContext? = null
 ) {
     val effectiveTitleResId = if (titleResId != 0) titleResId else booleanKey.titleResId
     val effectiveSummaryResId = summaryResId ?: booleanKey.summaryResId
@@ -77,14 +78,14 @@ fun AdaptiveSwitchPreferenceItem(
                     guardMessage = message
                 }
             },
-            title = { Text(stringResource(effectiveTitleResId)) },
+            title = { PreferenceTitleWithSyncBadge(effectiveTitleResId, booleanKey) },
             summary = summary,
             enabled = visibility.enabled
         )
     } else {
         SwitchPreference(
             state = state,
-            title = { Text(stringResource(effectiveTitleResId)) },
+            title = { PreferenceTitleWithSyncBadge(effectiveTitleResId, booleanKey) },
             summary = summary,
             enabled = visibility.enabled
         )
@@ -92,18 +93,15 @@ fun AdaptiveSwitchPreferenceItem(
 
     // Show guard rejection dialog
     guardMessage?.let { message ->
-        AlertDialog(
-            onDismissRequest = { guardMessage = null },
-            confirmButton = {
-                TextButton(onClick = { guardMessage = null }) {
-                    Text(stringResource(android.R.string.ok))
-                }
-            },
-            text = { Text(message) }
+        OkDialog(
+            title = stringResource(R.string.error),
+            message = message,
+            onDismiss = { guardMessage = null }
         )
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun AdaptiveSwitchPreferencePreview() {

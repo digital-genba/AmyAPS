@@ -36,22 +36,19 @@ import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.graphics.vector.rememberVectorPainter
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 /**
- * Internal composable for clickable category header with expand/collapse icon
+ * Internal composable for clickable category header with expand/collapse icon.
  *
  * @param insideCard If true, uses symmetric padding suitable for card headers
- * @param iconResId Optional drawable resource ID for the icon shown next to the title
+ * @param icon Optional Compose ImageVector shown next to the title
  */
 @Composable
 internal fun ClickablePreferenceCategoryHeader(
@@ -61,11 +58,11 @@ internal fun ClickablePreferenceCategoryHeader(
     onToggle: () -> Unit,
     modifier: Modifier = Modifier,
     insideCard: Boolean = false,
-    iconResId: Int? = null,
-    icon: ImageVector? = null
+    icon: ImageVector? = null,
+    collapsible: Boolean = true
 ) {
     val theme = LocalPreferenceTheme.current
-    val rotationAngle by animateFloatAsState(
+    val rotationAngle = animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
         label = "expandIconRotation"
     )
@@ -94,20 +91,14 @@ internal fun ClickablePreferenceCategoryHeader(
         modifier = modifier
             .fillMaxWidth()
             .background(backgroundColor)
-            .clickable(onClick = onToggle)
+            .then(if (collapsible) Modifier.clickable(onClick = onToggle) else Modifier)
             .padding(headerPadding),
         verticalAlignment = Alignment.CenterVertically
     ) {
         CompositionLocalProvider(LocalContentColor provides theme.categoryColor) {
-            // Icon (compose icon preferred, resource fallback)
-            val iconPainter = when {
-                icon != null                         -> rememberVectorPainter(icon)
-                iconResId != null && iconResId != -1 -> painterResource(id = iconResId)
-                else                                 -> null
-            }
-            if (iconPainter != null) {
+            if (icon != null) {
                 Icon(
-                    painter = iconPainter,
+                    imageVector = icon,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(24.dp)
@@ -130,13 +121,15 @@ internal fun ClickablePreferenceCategoryHeader(
                     }
                 }
             }
-            Icon(
-                imageVector = Icons.Default.ExpandMore,
-                contentDescription = stringResource(if (expanded) app.aaps.core.ui.R.string.collapse else app.aaps.core.ui.R.string.expand),
-                modifier = Modifier
-                    .size(theme.expandIconSize)
-                    .rotate(rotationAngle)
-            )
+            if (collapsible) {
+                Icon(
+                    imageVector = Icons.Default.ExpandMore,
+                    contentDescription = stringResource(if (expanded) app.aaps.core.ui.R.string.collapse else app.aaps.core.ui.R.string.expand),
+                    modifier = Modifier
+                        .size(theme.expandIconSize)
+                        .graphicsLayer { rotationZ = rotationAngle.value }
+                )
+            }
         }
     }
 }

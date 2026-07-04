@@ -18,7 +18,7 @@ import app.aaps.core.keys.interfaces.DoublePreferenceKey
 import app.aaps.core.keys.interfaces.IntPreferenceKey
 import app.aaps.core.keys.interfaces.IntentPreferenceKey
 import app.aaps.core.keys.interfaces.PreferenceKey
-import app.aaps.core.keys.interfaces.PreferenceVisibilityContext
+import app.aaps.core.keys.interfaces.VisibilityContext
 import app.aaps.core.keys.interfaces.StringKeyWithEntriesProvider
 import app.aaps.core.keys.interfaces.StringPreferenceKey
 import app.aaps.core.keys.interfaces.UnitDoublePreferenceKey
@@ -39,7 +39,8 @@ import app.aaps.core.ui.compose.ComposeScreenContent
 @Composable
 fun AdaptivePreferenceItem(
     key: PreferenceKey,
-    visibilityContext: PreferenceVisibilityContext? = null,
+    onShowMessage: (String) -> Unit,
+    visibilityContext: VisibilityContext? = null,
     onIntentClick: (() -> Unit)? = null,
     intentUrl: String? = null,
     intentActivityClass: Class<*>? = null
@@ -135,15 +136,15 @@ fun AdaptivePreferenceItem(
                     // Special handling for master password (requires current password first)
                     if (key == StringKey.ProtectionMasterPassword) {
                         AdaptiveMasterPasswordPreferenceItem(
-
                             checkPassword = checkPassword,
-                            hashPassword = hashPassword
+                            hashPassword = hashPassword,
+                            onShowMessage = onShowMessage
                         )
                     } else {
                         AdaptivePasswordPreferenceItem(
-
                             stringKey = key,
                             hashPassword = hashPassword,
+                            onShowMessage = onShowMessage,
                             visibilityContext = visibilityContext
                         )
                     }

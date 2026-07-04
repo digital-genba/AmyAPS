@@ -15,7 +15,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import app.aaps.core.interfaces.pump.BolusProgressState
+import app.aaps.core.interfaces.pump.PumpInsulin
 import app.aaps.core.ui.compose.AapsSmallFab
+import app.aaps.core.ui.compose.ExcludeFromJacocoGeneratedReport
 
 /**
  * FAB indicating active pump communication.
@@ -54,6 +56,7 @@ fun PumpActivityFab(
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun PreviewPumpFabIcon() {
@@ -66,6 +69,7 @@ private fun PreviewPumpFabIcon() {
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun PreviewPumpFabSmbPercent() {
@@ -78,7 +82,8 @@ private fun PreviewPumpFabSmbPercent() {
                 isPriming = false,
                 percent = 42,
                 status = "Delivering 0.13U",
-                delivered = 0.13,
+                wearStatus = "Delivering 0.13U",
+                delivered = PumpInsulin(0.13),
                 stopPressed = false,
                 stopDeliveryEnabled = true
             ),

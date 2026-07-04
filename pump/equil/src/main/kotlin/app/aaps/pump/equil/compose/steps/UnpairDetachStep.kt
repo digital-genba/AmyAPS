@@ -13,8 +13,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.aaps.core.ui.compose.ExcludeFromJacocoGeneratedReport
+import app.aaps.core.ui.compose.banner.ErrorBanner
 import app.aaps.core.ui.compose.pump.WizardButton
-import app.aaps.core.ui.compose.pump.WizardErrorBanner
 import app.aaps.core.ui.compose.pump.WizardStepLayout
 import app.aaps.pump.equil.R
 import app.aaps.pump.equil.compose.EquilUiConstants
@@ -78,11 +79,12 @@ private fun UnpairDetachStepContent(
             color = MaterialTheme.colorScheme.error
         )
         if (errorMessage != null) {
-            WizardErrorBanner(message = errorMessage)
+            ErrorBanner(message = errorMessage)
         }
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun UnpairDetachStepPreview() {
@@ -95,6 +97,7 @@ private fun UnpairDetachStepPreview() {
     )
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun UnpairDetachStepLoadingPreview() {
@@ -107,6 +110,7 @@ private fun UnpairDetachStepLoadingPreview() {
     )
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true)
 @Composable
 private fun UnpairDetachStepErrorPreview() {

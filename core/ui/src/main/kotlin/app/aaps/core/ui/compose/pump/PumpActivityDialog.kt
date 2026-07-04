@@ -16,6 +16,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -31,8 +32,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import app.aaps.core.interfaces.pump.BolusProgressState
+import app.aaps.core.interfaces.pump.PumpInsulin
 import app.aaps.core.ui.R
 import app.aaps.core.ui.compose.AapsSpacing
+import app.aaps.core.ui.compose.ExcludeFromJacocoGeneratedReport
 
 /**
  * Shared pump activity dialog showing pump status, queue info, and bolus progress.
@@ -67,7 +70,8 @@ fun PumpActivityDialog(
                 bolusState = bolusState,
                 pumpStatus = pumpStatus,
                 queueStatus = queueStatus,
-                onStop = onStop
+                onStop = onStop,
+                onDismiss = onDismiss
             )
         }
     } else {
@@ -80,7 +84,8 @@ fun PumpActivityDialog(
                 bolusState = bolusState,
                 pumpStatus = pumpStatus,
                 queueStatus = queueStatus,
-                onStop = onStop
+                onStop = onStop,
+                onDismiss = onDismiss
             )
         }
     }
@@ -91,7 +96,8 @@ private fun PumpActivityCard(
     bolusState: BolusProgressState?,
     pumpStatus: String,
     queueStatus: String?,
-    onStop: () -> Unit
+    onStop: () -> Unit,
+    onDismiss: () -> Unit
 ) {
     Card(
         modifier = Modifier
@@ -108,7 +114,8 @@ private fun PumpActivityCard(
             if (bolusState != null) {
                 BolusProgressSection(
                     state = bolusState,
-                    onStop = onStop
+                    onStop = onStop,
+                    onDismiss = onDismiss
                 )
             }
 
@@ -146,7 +153,8 @@ private fun PumpActivityCard(
 @Composable
 private fun BolusProgressSection(
     state: BolusProgressState,
-    onStop: () -> Unit
+    onStop: () -> Unit,
+    onDismiss: () -> Unit
 ) {
     // Title
     Text(
@@ -159,8 +167,9 @@ private fun BolusProgressSection(
 
     Spacer(modifier = Modifier.height(AapsSpacing.large))
 
-    // Status text
-    if (state.status.isNotEmpty()) {
+    // Status text — hidden when stalled: a present-tense "Delivering …" line would contradict the
+    // "connection lost / status unknown" message and read as if delivery were still being tracked.
+    if (state.status.isNotEmpty() && !state.stalled) {
         Text(
             text = state.status,
             style = MaterialTheme.typography.bodyMedium,
@@ -170,45 +179,83 @@ private fun BolusProgressSection(
         Spacer(modifier = Modifier.height(AapsSpacing.large))
     }
 
-    // Progress bar
-    if (state.percent > 0) {
-        LinearProgressIndicator(
-            progress = { state.percent / 100f },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(AapsSpacing.medium),
-            trackColor = MaterialTheme.colorScheme.surfaceVariant,
-        )
-    } else {
-        // Indeterminate when no progress received yet
-        LinearProgressIndicator(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(AapsSpacing.medium),
-            trackColor = MaterialTheme.colorScheme.surfaceVariant,
-        )
+    // Progress bar — hidden when stalled so a frozen (or still-animating indeterminate) bar isn't read
+    // as live delivery; the last-known percent is no longer authoritative once the stream is lost.
+    if (!state.stalled) {
+        if (state.percent > 0) {
+            LinearProgressIndicator(
+                progress = { state.percent / 100f },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(AapsSpacing.medium),
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+            )
+        } else {
+            // Indeterminate when no progress received yet
+            LinearProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(AapsSpacing.medium),
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+            )
+        }
+
+        Spacer(modifier = Modifier.height(AapsSpacing.extraLarge))
     }
 
-    Spacer(modifier = Modifier.height(AapsSpacing.extraLarge))
-
-    // Stop button
-    if (state.percent < 100) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center
-        ) {
-            Button(
-                onClick = onStop,
-                enabled = !state.stopPressed && state.stopDeliveryEnabled,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer,
-                    contentColor = MaterialTheme.colorScheme.onErrorContainer
-                )
+    when {
+        // Stalled (client/follower only — never set for a local bolus): the progress stream stopped
+        // before a terminal frame. Stop can't reach the master either, so offer a manual dismiss that
+        // only hides this dialog — it does NOT stop the pump.
+        state.stalled -> {
+            Text(
+                text = stringResource(R.string.clientcontrol_bolus_progress_stalled_title),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.error,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(AapsSpacing.medium))
+            Text(
+                text = stringResource(R.string.clientcontrol_bolus_progress_stalled_body),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(AapsSpacing.large))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center
             ) {
-                Text(
-                    text = if (state.stopPressed) stringResource(R.string.stop_pressed)
-                    else stringResource(R.string.stop)
-                )
+                // Neutral/tonal — Dismiss only hides this local view; it is NOT destructive like Stop,
+                // so it must not borrow Stop's error-red affordance.
+                FilledTonalButton(onClick = onDismiss) {
+                    Text(text = stringResource(R.string.dismiss))
+                }
+            }
+        }
+
+        // Stop button (delivery in progress)
+        state.percent < 100 -> {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Button(
+                    onClick = onStop,
+                    enabled = !state.stopPressed && state.stopDeliveryEnabled,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                ) {
+                    Text(
+                        text = if (state.stopPressed) stringResource(R.string.stop_pressed)
+                        else stringResource(R.string.stop)
+                    )
+                }
             }
         }
     }
@@ -216,6 +263,7 @@ private fun BolusProgressSection(
 
 // --- Previews ---
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true, widthDp = 360)
 @Composable
 private fun PreviewBolusInProgress() {
@@ -227,17 +275,20 @@ private fun PreviewBolusInProgress() {
                 isPriming = false,
                 percent = 45,
                 status = "Delivering 1.80U",
-                delivered = 1.8,
+                wearStatus = "Delivering 1.80U",
+                delivered = PumpInsulin(1.8),
                 stopPressed = false,
                 stopDeliveryEnabled = true
             ),
             pumpStatus = "Connected",
             queueStatus = null,
-            onStop = {}
+            onStop = {},
+            onDismiss = {}
         )
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true, widthDp = 360)
 @Composable
 private fun PreviewBolusStopPressed() {
@@ -249,17 +300,20 @@ private fun PreviewBolusStopPressed() {
                 isPriming = false,
                 percent = 45,
                 status = "Delivering 1.80U",
-                delivered = 1.8,
+                wearStatus = "Delivering 1.80U",
+                delivered = PumpInsulin(1.8),
                 stopPressed = true,
                 stopDeliveryEnabled = true
             ),
             pumpStatus = "",
             queueStatus = null,
-            onStop = {}
+            onStop = {},
+            onDismiss = {}
         )
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true, widthDp = 360)
 @Composable
 private fun PreviewBolusCompleted() {
@@ -271,17 +325,20 @@ private fun PreviewBolusCompleted() {
                 isPriming = false,
                 percent = 100,
                 status = "Bolus 4.00U delivered successfully",
-                delivered = 4.0,
+                wearStatus = "Bolus 4.00U delivered successfully",
+                delivered = PumpInsulin(4.0),
                 stopPressed = false,
                 stopDeliveryEnabled = true
             ),
             pumpStatus = "",
             queueStatus = null,
-            onStop = {}
+            onStop = {},
+            onDismiss = {}
         )
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true, widthDp = 360)
 @Composable
 private fun PreviewBolusIndeterminate() {
@@ -293,17 +350,46 @@ private fun PreviewBolusIndeterminate() {
                 isPriming = false,
                 percent = 0,
                 status = "",
-                delivered = 0.0,
+                wearStatus = "",
+                delivered = PumpInsulin(0.0),
                 stopPressed = false,
                 stopDeliveryEnabled = false
             ),
             pumpStatus = "Connecting for 5s",
             queueStatus = "BOLUS 2.50U",
-            onStop = {}
+            onStop = {},
+            onDismiss = {}
         )
     }
 }
 
+@ExcludeFromJacocoGeneratedReport
+@Preview(showBackground = true, widthDp = 360)
+@Composable
+private fun PreviewBolusStalled() {
+    MaterialTheme {
+        PumpActivityCard(
+            bolusState = BolusProgressState(
+                insulin = 1.6,
+                isSMB = false,
+                isPriming = false,
+                percent = 85,
+                status = "Delivering 1.36U",
+                wearStatus = "Delivering 1.36U",
+                delivered = PumpInsulin(1.36),
+                stopPressed = false,
+                stopDeliveryEnabled = true,
+                stalled = true
+            ),
+            pumpStatus = "",
+            queueStatus = null,
+            onStop = {},
+            onDismiss = {}
+        )
+    }
+}
+
+@ExcludeFromJacocoGeneratedReport
 @Preview(showBackground = true, widthDp = 360)
 @Composable
 private fun PreviewPumpStatusOnly() {
@@ -312,7 +398,8 @@ private fun PreviewPumpStatusOnly() {
             bolusState = null,
             pumpStatus = "Handshaking",
             queueStatus = "READSTATUS",
-            onStop = {}
+            onStop = {},
+            onDismiss = {}
         )
     }
 }

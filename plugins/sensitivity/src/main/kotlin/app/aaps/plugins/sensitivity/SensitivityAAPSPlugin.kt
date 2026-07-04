@@ -1,18 +1,15 @@
 package app.aaps.plugins.sensitivity
 
-import android.content.Context
-import androidx.preference.PreferenceCategory
-import androidx.preference.PreferenceManager
-import androidx.preference.PreferenceScreen
 import app.aaps.core.data.model.TE
 import app.aaps.core.data.plugin.PluginType
+import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.AutosensDataStore
 import app.aaps.core.interfaces.aps.AutosensResult
 import app.aaps.core.interfaces.aps.Sensitivity.SensitivityType
-import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
+import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.plugin.PluginDescription
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.resources.ResourceHelper
@@ -20,18 +17,13 @@ import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.IntKey
 import app.aaps.core.keys.interfaces.Preferences
-import app.aaps.core.objects.extensions.put
-import app.aaps.core.objects.extensions.store
 import app.aaps.core.ui.compose.icons.IcAs
 import app.aaps.core.ui.compose.preference.PreferenceSubScreenDef
 import app.aaps.core.utils.MidnightUtils
 import app.aaps.core.utils.Percentile
-import app.aaps.core.validators.preferences.AdaptiveDoublePreference
-import app.aaps.core.validators.preferences.AdaptiveIntPreference
 import app.aaps.plugins.sensitivity.extensions.isPSEvent5minBack
 import app.aaps.plugins.sensitivity.extensions.isTherapyEventEvent5minBack
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.JsonObject
 import java.util.Arrays
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -44,18 +36,22 @@ class SensitivityAAPSPlugin @Inject constructor(
     preferences: Preferences,
     private val profileFunction: ProfileFunction,
     private val dateUtil: DateUtil,
-    private val persistenceLayer: PersistenceLayer
+    private val persistenceLayer: PersistenceLayer,
+    private val activePlugin: ActivePlugin
 ) : AbstractSensitivityPlugin(
     PluginDescription()
         .mainType(PluginType.SENSITIVITY)
-        .pluginIcon(app.aaps.core.objects.R.drawable.ic_swap_vert_black_48dp_green)
         .icon(IcAs)
         .pluginName(R.string.sensitivity_aaps)
-        .shortName(R.string.sensitivity_shortname)
-        .preferencesId(PluginDescription.PREFERENCE_SCREEN)
+        .shortName(R.string.sensitivity_plugin_shortname)
         .description(R.string.description_sensitivity_aaps),
     aapsLogger, rh, preferences
 ) {
+
+    override fun specialShowInListCondition(): Boolean {
+        val aps = activePlugin.activeAPS ?: return true
+        return aps.algorithm == APSResult.Algorithm.AMA
+    }
 
     override fun detectSensitivity(ads: AutosensDataStore, fromTime: Long, toTime: Long): AutosensResult {
         val hoursForDetection = preferences.get(IntKey.AutosensPeriod)
@@ -151,21 +147,6 @@ class SensitivityAAPSPlugin @Inject constructor(
     override val id: SensitivityType
         get() = SensitivityType.SENSITIVITY_AAPS
 
-    override fun configuration(): JsonObject =
-        JsonObject(emptyMap())
-            .put(IntKey.AutosensPeriod, preferences)
-            .put(DoubleKey.AbsorptionMaxTime, preferences)
-            .put(DoubleKey.AutosensMin, preferences)
-            .put(DoubleKey.AutosensMin, preferences)
-
-    override fun applyConfiguration(configuration: JsonObject) {
-        configuration
-            .store(IntKey.AutosensPeriod, preferences)
-            .store(DoubleKey.AutosensMin, preferences)
-            .store(DoubleKey.AutosensMax, preferences)
-            .store(DoubleKey.AbsorptionMaxTime, preferences)
-    }
-
     override fun getPreferenceScreenContent() = PreferenceSubScreenDef(
         key = "sensitivity_aaps_settings",
         titleResId = R.string.absorption_settings_title,
@@ -183,24 +164,4 @@ class SensitivityAAPSPlugin @Inject constructor(
         ),
         icon = pluginDescription.icon
     )
-
-    // TODO: Remove after full migration to Compose preferences (getPreferenceScreenContent)
-    override fun addPreferenceScreen(preferenceManager: PreferenceManager, parent: PreferenceScreen, context: Context, requiredKey: String?) {
-        if (requiredKey != null && requiredKey != "absorption_aaps_advanced") return
-        val category = PreferenceCategory(context)
-        parent.addPreference(category)
-        category.apply {
-            key = "sensitivity_aaps_settings"
-            title = rh.gs(R.string.absorption_settings_title)
-            initialExpandedChildrenCount = 0
-            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = DoubleKey.AbsorptionMaxTime, dialogMessage = R.string.absorption_max_time_summary, title = R.string.absorption_max_time_title))
-            addPreference(AdaptiveIntPreference(ctx = context, intKey = IntKey.AutosensPeriod, dialogMessage = R.string.openapsama_autosens_period_summary, title = R.string.openapsama_autosens_period))
-            addPreference(preferenceManager.createPreferenceScreen(context).apply {
-                key = "absorption_aaps_advanced"
-                title = rh.gs(app.aaps.core.ui.R.string.advanced_settings_title)
-                addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = DoubleKey.AutosensMax, dialogMessage = R.string.openapsama_autosens_max_summary, title = R.string.openapsama_autosens_max))
-                addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = DoubleKey.AutosensMin, dialogMessage = R.string.openapsama_autosens_min_summary, title = R.string.openapsama_autosens_min))
-            })
-        }
-    }
 }

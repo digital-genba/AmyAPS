@@ -1,11 +1,6 @@
 package app.aaps.ui.compose.quickLaunch
 
 import androidx.compose.foundation.background
-import androidx.compose.ui.graphics.Color
-import app.aaps.core.ui.compose.icons.IcBolus
-import app.aaps.core.ui.compose.icons.IcCarbs
-import app.aaps.core.ui.compose.navigation.ElementType
-import app.aaps.core.ui.compose.navigation.color
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -32,6 +27,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedIconButton
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -44,7 +40,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -52,6 +48,8 @@ import app.aaps.core.ui.compose.AapsTopAppBar
 import app.aaps.core.ui.compose.NumberInputRow
 import app.aaps.core.ui.compose.TonalIcon
 import app.aaps.core.ui.compose.navigation.ElementCategory
+import app.aaps.core.ui.compose.navigation.ElementType
+import app.aaps.core.ui.compose.navigation.color
 import app.aaps.ui.R
 import kotlinx.coroutines.launch
 import sh.calvin.reorderable.ReorderableItem
@@ -96,22 +94,27 @@ fun QuickLauchConfigScreen(
         previousSelectedCount = state.selectedItems.size
     }
 
-    Column(modifier = modifier.fillMaxSize()) {
-        AapsTopAppBar(
-            title = { Text(stringResource(app.aaps.core.ui.R.string.quick_launch_configure)) },
-            navigationIcon = {
-                IconButton(onClick = onNavigateBack) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = null
-                    )
+    Scaffold(
+        modifier = modifier.fillMaxSize(),
+        topBar = {
+            AapsTopAppBar(
+                title = { Text(stringResource(app.aaps.core.ui.R.string.quick_launch_configure)) },
+                navigationIcon = {
+                    IconButton(onClick = onNavigateBack) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = null
+                        )
+                    }
                 }
-            }
-        )
-
+            )
+        }
+    ) { paddingValues ->
         LazyColumn(
             state = lazyListState,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
         ) {
             // ── Selected actions ──
             item(key = "header_selected") {
@@ -158,97 +161,98 @@ fun QuickLauchConfigScreen(
                 }
             }
 
-            // ── Available: Treatment ──
+            // ── Available: Treatment ── (whole section hidden when empty — e.g. all visibility-filtered on a client)
             val treatmentItems = state.availableStaticItems.filter {
                 it.action.elementType?.category in setOf(ElementCategory.TREATMENT, ElementCategory.CGM)
             }
-            item(key = "divider_treatment") {
-                HorizontalDivider()
-            }
-            item(key = "header_treatment") {
-                SectionHeader(stringResource(R.string.quick_launch_category_treatment))
-            }
-            if (treatmentItems.isEmpty()) {
-                item(key = "empty_treatment") { EmptyHint(stringResource(R.string.quick_launch_all_selected)) }
-            } else {
+            if (treatmentItems.isNotEmpty()) {
+                item(key = "divider_treatment") {
+                    HorizontalDivider()
+                }
+                item(key = "header_treatment") {
+                    SectionHeader(stringResource(R.string.quick_launch_category_treatment))
+                }
                 items(treatmentItems, key = { "avail_${it.action.typeId}" }) { item ->
                     AvailableActionItem(item = item, onAdd = { viewModel.addAction(item.action) }, modifier = Modifier.animateItem())
                 }
             }
 
-            // ── Available: Care Portal ──
+            // ── Available: Care Portal ── (hidden when empty)
             val careItems = state.availableStaticItems.filter {
                 it.action.elementType?.category in setOf(ElementCategory.CAREPORTAL, ElementCategory.DEVICE)
             }
-            item(key = "divider_care") {
-                HorizontalDivider()
-            }
-            item(key = "header_care") {
-                SectionHeader(stringResource(R.string.quick_launch_category_care))
-            }
-            if (careItems.isEmpty()) {
-                item(key = "empty_care") { EmptyHint(stringResource(R.string.quick_launch_all_selected)) }
-            } else {
+            if (careItems.isNotEmpty()) {
+                item(key = "divider_care") {
+                    HorizontalDivider()
+                }
+                item(key = "header_care") {
+                    SectionHeader(stringResource(R.string.quick_launch_category_care))
+                }
                 items(careItems, key = { "avail_${it.action.typeId}" }) { item ->
                     AvailableActionItem(item = item, onAdd = { viewModel.addAction(item.action) }, modifier = Modifier.animateItem())
                 }
             }
 
-            // ── Dynamic: Quick Wizard ──
-            item(key = "divider_qw") {
-                HorizontalDivider()
-            }
-            item(key = "header_qw") {
-                SectionHeader(stringResource(R.string.quick_launch_category_quick_wizard))
-            }
-            if (state.availableQuickWizardItems.isEmpty()) {
-                item(key = "empty_qw") { EmptyHint(stringResource(R.string.quick_launch_no_quick_wizard)) }
-            } else {
+            // ── Dynamic: Quick Wizard ── (hidden when empty)
+            if (state.availableQuickWizardItems.isNotEmpty()) {
+                item(key = "divider_qw") {
+                    HorizontalDivider()
+                }
+                item(key = "header_qw") {
+                    SectionHeader(stringResource(R.string.quick_launch_category_quick_wizard))
+                }
                 items(state.availableQuickWizardItems, key = { "avail_qw_${it.action.dynamicId}" }) { item ->
                     AvailableActionItem(item = item, onAdd = { viewModel.addAction(item.action) }, modifier = Modifier.animateItem())
                 }
             }
 
-            // ── Dynamic: Automation ──
-            item(key = "divider_auto") {
-                HorizontalDivider()
+            // ── Dynamic: Scenes ──
+            if (state.availableSceneItems.isNotEmpty()) {
+                item(key = "divider_scenes") {
+                    HorizontalDivider(modifier = Modifier.padding(start = 56.dp))
+                }
+                item(key = "header_scenes") {
+                    SectionHeader(stringResource(app.aaps.core.ui.R.string.scenes))
+                }
+                items(state.availableSceneItems, key = { "avail_scene_${it.action.dynamicId}" }) { item ->
+                    AvailableActionItem(item = item, onAdd = { viewModel.addAction(item.action) }, modifier = Modifier.animateItem())
+                }
             }
-            item(key = "header_auto") {
-                SectionHeader(stringResource(R.string.quick_launch_category_automation))
-            }
-            if (state.availableAutomationItems.isEmpty()) {
-                item(key = "empty_auto") { EmptyHint(stringResource(R.string.quick_launch_no_automation)) }
-            } else {
+
+            // ── Dynamic: Automation ── (hidden when empty)
+            if (state.availableAutomationItems.isNotEmpty()) {
+                item(key = "divider_auto") {
+                    HorizontalDivider()
+                }
+                item(key = "header_auto") {
+                    SectionHeader(stringResource(R.string.quick_launch_category_automation))
+                }
                 items(state.availableAutomationItems, key = { "avail_auto_${it.action.dynamicId}" }) { item ->
                     AvailableActionItem(item = item, onAdd = { viewModel.addAction(item.action) }, modifier = Modifier.animateItem())
                 }
             }
 
-            // ── Dynamic: TT Presets ──
-            item(key = "divider_tt") {
-                HorizontalDivider()
-            }
-            item(key = "header_tt") {
-                SectionHeader(stringResource(R.string.quick_launch_category_temp_target))
-            }
-            if (state.availableTtPresetItems.isEmpty()) {
-                item(key = "empty_tt") { EmptyHint(stringResource(R.string.quick_launch_no_tt_presets)) }
-            } else {
+            // ── Dynamic: TT Presets ── (hidden when empty)
+            if (state.availableTtPresetItems.isNotEmpty()) {
+                item(key = "divider_tt") {
+                    HorizontalDivider()
+                }
+                item(key = "header_tt") {
+                    SectionHeader(stringResource(R.string.quick_launch_category_temp_target))
+                }
                 items(state.availableTtPresetItems, key = { "avail_tt_${it.action.dynamicId}" }) { item ->
                     AvailableActionItem(item = item, onAdd = { viewModel.addAction(item.action) }, modifier = Modifier.animateItem())
                 }
             }
 
-            // ── Dynamic: Profiles ──
-            item(key = "divider_profiles") {
-                HorizontalDivider()
-            }
-            item(key = "header_profiles") {
-                SectionHeader(stringResource(R.string.quick_launch_category_profile))
-            }
-            if (state.availableProfileItems.isEmpty()) {
-                item(key = "empty_profiles") { EmptyHint(stringResource(R.string.quick_launch_no_profiles)) }
-            } else {
+            // ── Dynamic: Profiles ── (hidden when empty)
+            if (state.availableProfileItems.isNotEmpty()) {
+                item(key = "divider_profiles") {
+                    HorizontalDivider()
+                }
+                item(key = "header_profiles") {
+                    SectionHeader(stringResource(R.string.quick_launch_category_profile))
+                }
                 items(state.availableProfileItems, key = { "avail_profile_${it.action.dynamicId}" }) { item ->
                     AvailableActionItem(item = item, onAdd = { viewModel.addAction(item.action) }, modifier = Modifier.animateItem())
                 }
@@ -287,17 +291,7 @@ private fun SectionHeader(text: String) {
 }
 
 @Composable
-private fun resolveActionColor(item: ResolvedQuickLaunchItem): Color {
-    val action = item.action
-    if (action is QuickLaunchAction.QuickWizardAction) {
-        return when (item.icon) {
-            IcBolus -> ElementType.INSULIN.color()
-            IcCarbs -> ElementType.CARBS.color()
-            else    -> ElementType.QUICK_WIZARD.color()
-        }
-    }
-    return action.elementType?.color() ?: MaterialTheme.colorScheme.primary
-}
+private fun resolveActionColor(item: ResolvedQuickLaunchItem): Color = resolveItemColor(item)
 
 @Composable
 private fun EmptyHint(text: String) {
@@ -340,7 +334,7 @@ private fun SelectedActionItem(
                     )
                 }
                 Spacer(modifier = Modifier.width(4.dp))
-                TonalIcon(painter = rememberVectorPainter(item.icon), color = color)
+                TonalIcon(icon = item.icon, color = color)
             }
         },
         trailingContent = {
@@ -391,7 +385,7 @@ private fun AvailableActionItem(
             { Text(text = desc, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         },
         leadingContent = {
-            TonalIcon(painter = rememberVectorPainter(item.icon), color = color)
+            TonalIcon(icon = item.icon, color = color)
         },
         trailingContent = {
             OutlinedIconButton(
