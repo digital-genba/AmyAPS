@@ -1,12 +1,5 @@
 package app.aaps.pump.danars
 
-import app.aaps.core.interfaces.di.PumpDriver
-import app.aaps.core.interfaces.notifications.NotificationManager
-import app.aaps.core.interfaces.plugin.PluginBase
-import dev.zacsweers.metro.AppScope
-import dev.zacsweers.metro.ContributesIntoMap
-import dev.zacsweers.metro.IntKey as MetroIntKey
-import dev.zacsweers.metro.binding
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -18,10 +11,14 @@ import app.aaps.core.data.pump.defs.PumpDescription
 import app.aaps.core.data.pump.defs.PumpType
 import app.aaps.core.data.time.T
 import app.aaps.core.interfaces.constraints.PumpPluginConstraints
+import app.aaps.core.interfaces.di.PumpDriver
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
+import app.aaps.core.interfaces.notifications.NotificationManager
 import app.aaps.core.interfaces.plugin.OwnDatabasePlugin
+import app.aaps.core.interfaces.plugin.PluginBase
 import app.aaps.core.interfaces.plugin.PluginDescription
+import app.aaps.core.interfaces.profile.Profile
 import app.aaps.core.interfaces.pump.BlePreCheck
 import app.aaps.core.interfaces.pump.BolusProgressData
 import app.aaps.core.interfaces.pump.Dana
@@ -62,6 +59,11 @@ import app.aaps.pump.dana.keys.DanaStringComposedKey
 import app.aaps.pump.dana.keys.DanaStringNonKey
 import app.aaps.pump.danars.compose.DanaRSComposeContent
 import app.aaps.pump.danars.services.DanaRSService
+import dev.zacsweers.metro.AppScope
+import dev.zacsweers.metro.ContributesIntoMap
+import dev.zacsweers.metro.Inject
+import dev.zacsweers.metro.SingleIn
+import dev.zacsweers.metro.binding
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -69,10 +71,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import dev.zacsweers.metro.Inject
-import dev.zacsweers.metro.SingleIn
 import kotlin.math.abs
 import kotlin.math.max
+import dev.zacsweers.metro.IntKey as MetroIntKey
 
 @ContributesIntoMap(AppScope::class, binding = binding<PluginBase>())
 @PumpDriver
@@ -95,6 +96,7 @@ class DanaRSPlugin(
     private val pumpEnactResultProvider: () -> PumpEnactResult,
     private val blePreCheck: BlePreCheck,
     private val bolusProgressData: BolusProgressData,
+    private val pumpSync: PumpSync,
     notificationManager: NotificationManager
 ) : PumpPluginBase(
     pluginDescription = PluginDescription()
@@ -128,8 +130,15 @@ class DanaRSPlugin(
 
     private var scope: CoroutineScope? = null
 
-    override val pumpDescription
-        get() = PumpDescription().fillFor(danaPump.pumpType())
+    /**
+     * Built on every read, because the pump type is only known after connecting (RS, i or i2), with the
+     * bolus and basal steps the pump is set to (see [DanaPump.applyReadSteps]).
+     *
+     * The steps used to be written into this description from [getPumpStatus], but a getter hands out a
+     * new object each time, so they were lost and a bolus of 1.55 U was refused by a pump set to 0.1 U (#946).
+     */
+    override val pumpDescription: PumpDescription
+        get() = danaPump.applyReadSteps(PumpDescription().fillFor(danaPump.pumpType()))
 
     override suspend fun onStart() {
         super.onStart()
@@ -172,12 +181,17 @@ class DanaRSPlugin(
     }
 
     fun changePump() {
+        val wasPaired = mDeviceName.isNotEmpty()
         mDeviceAddress = preferences.get(DanaStringNonKey.MacAddress)
         mDeviceName = preferences.get(DanaStringNonKey.RsName)
         danaPump.serialNumber = preferences.get(DanaStringNonKey.RsName)
         danaPump.reset()
         if (isConfigured())
             pluginScope.launch { commandQueue.readStatus(rh.gs(app.aaps.core.ui.R.string.device_changed)) }
+        // The pump was removed: AAPS counts nothing more from it, also when it could not be reached (D9). Off the main
+        // thread, as connectNewPump waits for the database.
+        else if (wasPaired)
+            pluginScope.launch { pumpSync.connectNewPump() }
     }
 
     override fun connect(reason: String) {
@@ -202,8 +216,6 @@ class DanaRSPlugin(
 
     override suspend fun getPumpStatus(reason: String) {
         danaRSService?.readPumpStatus()
-        pumpDescription.basalStep = danaPump.basalStep
-        pumpDescription.bolusStep = danaPump.bolusStep
     }
 
     // DanaR interface
@@ -281,6 +293,15 @@ class DanaRSPlugin(
         return true
     }
 
+    /**
+     * The 24 hourly rates the pump itself reports: it keeps them in 0.01 U/h steps and is read again after each set
+     * (#2454). If that read failed, they are still the old ones; then [isThisProfileSet] fails too, and KeepAlive
+     * sets the profile again. null before the pump was read: the profile counts as it was sent.
+     */
+    override fun deliveredBasal(): List<Profile.ProfileValue>? =
+        if (!isInitialized()) null
+        else danaPump.pumpProfiles?.get(danaPump.activeProfile)?.take(24)?.mapIndexed { hour, rate -> Profile.ProfileValue(T.hours(hour.toLong()).secs().toInt(), rate) }
+
     override val baseBasalRate get() = PumpRate(danaPump.currentBasal)
 
     override suspend fun deliverTreatment(detailedBolusInfo: DetailedBolusInfo): PumpEnactResult {
@@ -307,20 +328,48 @@ class DanaRSPlugin(
         val result = pumpEnactResultProvider()
         val delivered = bolusProgressData.state.value?.delivered ?: PumpInsulin(0.0)
         result.success = connectionOK && (abs(detailedBolusInfo.insulin - delivered.cU) < pumpDescription.bolusStep || danaPump.bolusStopped)
+        // Enacted = the pump really gave insulin. Was never set, so a delivered bolus reported
+        // enacted = false and the Loop screen showed no SMB amount, unlike other pumps. A stopped
+        // bolus can be a success with nothing given, so it needs delivered > 0 too.
+        result.enacted = result.success && delivered.cU > 0
         result.bolusDelivered = delivered.cU
         if (!result.success) {
-            var error = "" + danaPump.bolusStartErrorCode
-            when (danaPump.bolusStartErrorCode) {
-                0x10 -> error = rh.gs(app.aaps.pump.dana.R.string.maxbolusviolation)
-                0x20 -> error = rh.gs(app.aaps.pump.dana.R.string.commanderror)
-                0x40 -> error = rh.gs(app.aaps.pump.dana.R.string.speederror)
-                0x80 -> error = rh.gs(app.aaps.pump.dana.R.string.insulinlimitviolation)
-            }
+            val error = bolusStartErrorText(danaPump.bolusStartErrorCode)
             result.comment = rh.gs(app.aaps.pump.dana.R.string.boluserrorcode, detailedBolusInfo.insulin, delivered.cU, error)
         } else result.comment = rh.gs(app.aaps.core.ui.R.string.ok)
         aapsLogger.debug(LTag.PUMP, "deliverTreatment: OK. Asked: " + detailedBolusInfo.insulin + " Delivered: " + result.bolusDelivered)
         return result
     }
+
+    /**
+     * Text for the error of step bolus start (0x4A).
+     * Older pumps send one error value. Dana-i2 sends 2 bytes of flags. More than one flag can be set,
+     * then the first one in this list is shown.
+     */
+    private fun bolusStartErrorText(code: Int): String =
+        if (danaPump.isDanaI2)
+            when {
+                code and 0x0001 != 0 -> rh.gs(app.aaps.core.ui.R.string.pump_suspended)
+                code and 0x0002 != 0 -> rh.gs(app.aaps.pump.dana.R.string.dailymax)
+                code and 0x0004 != 0 -> rh.gs(app.aaps.pump.dana.R.string.danar_disablebolusblock)
+                code and 0x0008 != 0 -> rh.gs(app.aaps.core.ui.R.string.pump_busy)
+                code and 0x0010 != 0 -> rh.gs(app.aaps.pump.dana.R.string.danai2_bolus_error_no_prime)
+                code and 0x0020 != 0 -> rh.gs(app.aaps.pump.dana.R.string.commanderror)
+                code and 0x0040 != 0 -> rh.gs(app.aaps.pump.dana.R.string.speederror)
+                code and 0x0080 != 0 -> rh.gs(app.aaps.pump.dana.R.string.insulinlimitviolation)
+                code and 0x0100 != 0 -> rh.gs(app.aaps.pump.dana.R.string.maxbolusviolation)
+                code and 0x0200 != 0 -> rh.gs(app.aaps.pump.dana.R.string.danai2_bolus_error_not_enough_insulin)
+                code and 0x0400 != 0 -> rh.gs(app.aaps.pump.dana.R.string.danai2_bolus_error_easy_sleep)
+                else                 -> "0x%04X".format(code)
+            }
+        else
+            when (code) {
+                0x10 -> rh.gs(app.aaps.pump.dana.R.string.maxbolusviolation)
+                0x20 -> rh.gs(app.aaps.pump.dana.R.string.commanderror)
+                0x40 -> rh.gs(app.aaps.pump.dana.R.string.speederror)
+                0x80 -> rh.gs(app.aaps.pump.dana.R.string.insulinlimitviolation)
+                else -> code.toString()
+            }
 
     override fun stopBolusDelivering() {
         danaRSService?.bolusStop()
@@ -335,7 +384,7 @@ class DanaRSPlugin(
         var percentRate = 0
         // Any basal less than 0.10u/h will be dumped once per hour, not every 4 minutes. So if it's less than .10u/h, set a zero temp.
         if (absoluteRate >= 0.10) {
-            percentRate = java.lang.Double.valueOf(absoluteRate / baseBasalRate.cU * 100).toInt()
+            percentRate = DanaPump.tempBasalPercent(absoluteRate, baseBasalRate.cU)
         } else {
             aapsLogger.debug(LTag.PUMP, "setTempBasalAbsolute: Requested basal < 0.10u/h. Setting 0u/h (doLowTemp || doHighTemp)")
         }
@@ -528,11 +577,13 @@ class DanaRSPlugin(
     override suspend fun cancelExtendedBolus(): PumpEnactResult {
         if (danaPump.isExtendedInProgress) {
             danaRSService?.extendedBolusStop()
-            aapsLogger.debug(LTag.PUMP, "cancelExtendedBolus: Failed")
+            // It said "Failed" and gave the text of a failed cancel also when the pump had stopped it.
+            val stopped = !danaPump.isExtendedInProgress
+            aapsLogger.debug(LTag.PUMP, "cancelExtendedBolus: ${if (stopped) "OK" else "Failed"}")
             return pumpEnactResultProvider()
-                .success(!danaPump.isExtendedInProgress)
+                .success(stopped)
                 .enacted(true)
-                .comment(app.aaps.core.ui.R.string.canceling_eb_failed)
+                .comment(if (stopped) app.aaps.core.ui.R.string.ok else app.aaps.core.ui.R.string.canceling_eb_failed)
         } else {
             aapsLogger.debug(LTag.PUMP, "cancelExtendedBolus: OK")
             return pumpEnactResultProvider()
@@ -549,7 +600,7 @@ class DanaRSPlugin(
 
     override fun pumpSpecificShortStatus(veryShort: Boolean): String {
         if (!veryShort)
-            return "TDD: ${decimalFormatter.to0Decimal(danaPump.dailyTotalUnits)} / ${danaPump.maxDailyTotalUnits} U"
+            return rh.gs(app.aaps.core.interfaces.R.string.confirmation_line, "TDD", rh.gs(app.aaps.core.interfaces.R.string.values_with_slash, decimalFormatter.to0Decimal(danaPump.dailyTotalUnits), rh.gs(app.aaps.core.ui.R.string.units_format_insulin_int, danaPump.maxDailyTotalUnits)))
         return ""
     }
 

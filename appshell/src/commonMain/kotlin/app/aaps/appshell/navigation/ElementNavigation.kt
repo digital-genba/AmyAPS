@@ -3,22 +3,22 @@ package app.aaps.appshell.navigation
 import androidx.navigation.NavController
 import app.aaps.core.data.ue.Sources
 import app.aaps.core.interfaces.configuration.ConfigBuilder
+import app.aaps.core.interfaces.navigation.ElementType
+import app.aaps.core.interfaces.notifications.NotificationId
 import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.plugin.PluginBase
 import app.aaps.core.interfaces.protection.ProtectionCheck
 import app.aaps.core.interfaces.protection.ProtectionResult
 import app.aaps.core.interfaces.source.DexcomBoyda
-import app.aaps.ui.compose.careDialog.CareportalEventType
-import app.aaps.core.interfaces.navigation.ElementType
-import app.aaps.core.interfaces.notifications.NotificationId
 import app.aaps.core.keys.StringKey
-import app.aaps.core.ui.search.SearchableItem
-import app.aaps.ui.compose.quickLaunch.QuickLaunchAction
-import app.aaps.ui.search.SearchIndexEntry
 import app.aaps.core.ui.compose.ScreenMode
 import app.aaps.core.ui.compose.navigation.NavigationRequest
-import app.aaps.ui.compose.main.MainViewModel
+import app.aaps.core.ui.search.SearchableItem
+import app.aaps.ui.compose.careDialog.CareportalEventType
 import app.aaps.ui.compose.fillDialog.FillPreselect
+import app.aaps.ui.compose.main.MainViewModel
+import app.aaps.ui.compose.quickLaunch.QuickLaunchAction
+import app.aaps.ui.search.SearchIndexEntry
 
 /**
  * Where a tap in the drawer, the toolbar or a search result actually goes.
@@ -130,10 +130,10 @@ class ElementNavigator(
             ElementType.QUICK_WIZARD_MANAGEMENT -> navController.navigate(AppRoute.QuickWizardManagement.createRoute(mode))
             ElementType.FOOD_MANAGEMENT         -> navController.navigate(AppRoute.FoodManagement.route)
             ElementType.RUNNING_MODE            -> navController.navigate(AppRoute.RunningMode.route)
-            ElementType.SCENE_MANAGEMENT        -> navController.navigate(AppRoute.SceneList.route)
+            ElementType.SCENE_MANAGEMENT        -> navController.navigate(AppRoute.SceneList.createRoute(mode))
             ElementType.AUTOMATION_MANAGEMENT   -> navController.navigate(AppRoute.AutomationList.route)
             ElementType.AUTHORIZED_CLIENTS      -> navController.navigate(AppRoute.AuthorizedClients.route)
-            ElementType.PAIR_WITH_MASTER        -> navController.navigate(AppRoute.PairWithMaster.route)
+            ElementType.PAIR_WITH_MASTER        -> navController.navigate(AppRoute.PairWithMaster.createRoute())
             ElementType.QUICK_LAUNCH_CONFIG     -> navController.navigate(AppRoute.QuickLaunchConfig.route)
 
             // Treatment dialogs
@@ -220,9 +220,9 @@ fun ElementNavigator.handleQuickLaunchAction(action: QuickLaunchAction) {
             mainViewModel.requestProfileConfirmation(action.profileName, action.percentage, action.durationMinutes)
         }
 
-        is QuickLaunchAction.SceneAction       -> guarded(ElementType.SCENE.protection) {
-            mainViewModel.requestSceneConfirmation(action.sceneId)
-        }
+        // Not guarded here: the view model asks for protection itself, so the overview scenes sheet gets the
+        // same check. Guarding here too would ask twice when the protection timeout is 0.
+        is QuickLaunchAction.SceneAction       -> mainViewModel.requestSceneConfirmation(action.sceneId)
 
         is QuickLaunchAction.PluginAction      -> {
             val index = activePlugin.getPluginsList().indexOfFirst { it::class.simpleName == action.className }

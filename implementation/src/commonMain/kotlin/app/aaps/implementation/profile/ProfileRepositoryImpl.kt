@@ -44,7 +44,6 @@ import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.ContributesBinding
 import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.SingleIn
-import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -60,7 +59,6 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.add
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -69,6 +67,7 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
+import kotlin.concurrent.Volatile
 
 /**
  * Single source of truth for the local profile list.
@@ -105,9 +104,8 @@ class ProfileRepositoryImpl(
     private val notificationManager: NotificationManager,
     // Hosts the [StringNonKey.LocalProfileData] collector: the repository is a @Singleton that lives
     // as long as the process, so the collector must live that long too.
-    // Unqualified on purpose: @ApplicationScope is a javax.inject.Qualifier, so it cannot cross
-    // into commonMain. The graph hands out the very same scope object, so
-    // this is the same instance the qualifier used to select.
+    // Unqualified: the graph binds the one application scope with and without @ApplicationScope
+    // (AppCoroutineBindings), so this is the same instance.
     private val appScope: CoroutineScope
 ) : ProfileRepository {
 
@@ -204,7 +202,7 @@ class ProfileRepositoryImpl(
         runCatching {
             withContext(aapsIoDispatcher) {
                 val original = profilesList[index]
-                profilesList.add(original.copy(name = original.name + " copy"))
+                profilesList.add(original.copy(name = rh.gs(CoreUiStrings.profile_clone_name, original.name)))
                 storeSettingsInternal(timestamp = dateUtil.now())
             }
             snapshot()

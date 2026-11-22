@@ -17,10 +17,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -33,6 +36,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.aaps.core.interfaces.plugin.PluginBase
+import app.aaps.core.keys.interfaces.ClientRole
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.compose.masterEditingEnabled
 import app.aaps.core.ui.compose.stringResource
@@ -50,6 +54,10 @@ import app.aaps.core.ui.search.SearchableItem
  *   list is equals() to the old one and both this composable and its list items would otherwise be skipped,
  *   leaving switches/greying stale. Feeding it into the item keys forces the rows to reflect the new state.
  * @param onResultClick Called when a result item is clicked (only for enabled items)
+ * @param query The current search text. While it is empty, the recent searches are shown instead of results.
+ * @param history Recent searches, newest first
+ * @param onHistoryClick Called when a recent search is tapped: the caller runs that search again
+ * @param onHistoryRemove Called when the remove button of a recent search is tapped
  * @param modifier Modifier for the component
  */
 @Composable
@@ -62,6 +70,10 @@ fun SearchResults(
     revision: Int,
     onResultClick: (SearchIndexEntry) -> Unit,
     onPluginToggle: (PluginBase) -> Unit,
+    query: String,
+    history: List<String>,
+    onHistoryClick: (String) -> Unit,
+    onHistoryRemove: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val allResults = results + wikiResults
@@ -75,6 +87,14 @@ fun SearchResults(
                 isSearching                              -> {
                     CircularProgressIndicator(
                         modifier = Modifier.align(Alignment.Center)
+                    )
+                }
+
+                query.isBlank() && history.isNotEmpty()  -> {
+                    SearchHistoryList(
+                        history = history,
+                        onHistoryClick = onHistoryClick,
+                        onHistoryRemove = onHistoryRemove
                     )
                 }
 
@@ -140,6 +160,70 @@ fun SearchResults(
 }
 
 /**
+ * The recent searches, shown while the search field is empty. Tapping a row runs that search again;
+ * the X at the end of the row removes just that row.
+ */
+@Composable
+private fun SearchHistoryList(
+    history: List<String>,
+    onHistoryClick: (String) -> Unit,
+    onHistoryRemove: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(vertical = 8.dp)
+    ) {
+        item(key = "history_header") {
+            Column {
+                Text(
+                    text = stringResource(CoreUiStrings.search_recent),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant
+                )
+            }
+        }
+        items(items = history, key = { "history_$it" }) { entry ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onHistoryClick(entry) }
+                    .padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.History,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+                Text(
+                    text = entry,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = { onHistoryRemove(entry) }) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = stringResource(CoreUiStrings.search_history_remove),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
  * Header for a search result category.
  */
 @Composable
@@ -195,8 +279,9 @@ private fun SearchResultItem(
     val isEnabled = remember(revision, entry) { entry.item.plugin?.isEnabled() ?: true }
     // Synced single-select selections (APS/Sensitivity/Smoothing/Calibration) drive the master's active plugin,
     // so on a client with the master offline they must not be changed from here — same gate as the Config Builder
-    // (see PluginCategoryScreen). Non-synced categories (SYNC/GENERAL/pump/…) stay editable offline.
-    val editableWhenSynced = masterEditingEnabled()
+    // (see PluginCategoryScreen). Non-synced categories (SYNC/GENERAL/pump/…) stay editable offline. Changing the
+    // master's plugin selection is a setting, so a client also needs the admin role for it.
+    val editableWhenSynced = masterEditingEnabled(ClientRole.Admin)
     // Whether this plugin can be flipped from here: enforced plugins are locked, an already-active
     // single-select plugin can't be turned off (only replaced by enabling another), and a synced selection is
     // gated while the master is offline.
@@ -306,7 +391,7 @@ private fun WikiLoadingIndicator(modifier: Modifier = Modifier) {
         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
         Spacer(modifier = Modifier.width(12.dp))
         Text(
-            text = stringResource(CoreUiStrings.search_category_wiki) + "\u2026",
+            text = stringResource(CoreUiStrings.search_category_wiki),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

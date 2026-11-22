@@ -2,7 +2,10 @@ package app.aaps.ios.shell.di
 
 import app.aaps.core.data.iob.InMemoryGlucoseValue
 import app.aaps.core.interfaces.logging.LTag
+import app.aaps.core.objects.di.CoreObjectsGraph
 import app.aaps.implementation.logging.AAPSLoggerIos
+import app.aaps.ios.shell.prefs.TestStorage
+import app.aaps.shared.clientbindings.ClientGraphBindings
 import dev.zacsweers.metro.createGraphFactory
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -10,8 +13,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotSame
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
-import app.aaps.core.objects.di.CoreObjectsGraph
-import app.aaps.shared.clientbindings.ClientGraphBindings
 
 /**
  * What Metro has to do on Kotlin/Native, checked rather than displayed.
@@ -22,7 +23,11 @@ import app.aaps.shared.clientbindings.ClientGraphBindings
  */
 class IosProbeGraphTest {
 
-    private fun graph() = createGraphFactory<IosProbeGraph.Factory>().create(CoreObjectsGraph, ClientGraphBindings)
+    init {
+        TestStorage.install()
+    }
+
+    private fun graph() = createGraphFactory<IosProbeGraph.Factory>().create(CoreObjectsGraph, ClientGraphBindings, NoCrashReporter)
 
     @Test
     fun `the graph can be created`() {
@@ -111,11 +116,12 @@ class IosProbeGraphTest {
     }
 
     @Test
-    fun `the graph builds FabricPrivacy over the real preference store`() {
+    fun `the graph builds FabricPrivacy and a build without a reporter uploads nothing`() {
         val fabric = graph().fabricPrivacy
 
-        // Reads NSUserDefaults for the enable flag, so calling it exercises the store too.
-        fabric.fabricEnabled()
+        // False on purpose: this graph has `NoCrashReporter`, so nothing can be uploaded, whatever the
+        // default of the setting is. This is what puts "Crash logs upload disabled!" in the About dialog.
+        assertEquals(false, fabric.fabricEnabled())
         fabric.logMessage("probe")
     }
 

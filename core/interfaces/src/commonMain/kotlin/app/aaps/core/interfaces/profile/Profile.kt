@@ -4,7 +4,6 @@ import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.data.model.ICfg
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.notifications.NotificationManager
-import app.aaps.core.interfaces.nsclient.ProcessedDeviceStatusData
 import app.aaps.core.interfaces.pump.Pump
 import app.aaps.core.interfaces.resources.TextResolver
 import app.aaps.core.interfaces.utils.DateUtil
@@ -19,7 +18,20 @@ interface Profile {
      */
     //val hasDynamicIsf: Boolean
 
-    class ValidityCheck(var isValid: Boolean = true, val reasons: ArrayList<String> = arrayListOf())
+    class ValidityCheck(var isValid: Boolean = true, val reasons: ArrayList<String> = arrayListOf()) {
+
+        /** Why the basal rate does not fit the pump. Only the pump check sets it, so it is null for the other checks. */
+        var basalProblem: BasalProblem? = null
+    }
+
+    /** The ways a basal rate can fail the pump check. */
+    enum class BasalProblem {
+
+        /** The pump takes only full hours, and a basal block does not end on one. */
+        NOT_ALIGNED_TO_HOURS,
+        BELOW_PUMP_MINIMUM,
+        ABOVE_PUMP_MAXIMUM
+    }
 
     /**
      * Check validity of profile
@@ -75,11 +87,6 @@ interface Profile {
      * ISF profile value according to "now"" in MGDL
      */
     fun getProfileIsfMgdl(): Double
-
-    /**
-     * ISF value according to timestamp in MGDL for use in Wizard and COB calculations
-     */
-    fun getIsfMgdlForCarbs(timestamp: Long, caller: String, config: Config, processedDeviceStatusData: ProcessedDeviceStatusData): Double
 
     /**
      * Average target value according to "now" in MGDL

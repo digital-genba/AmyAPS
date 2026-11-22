@@ -1,10 +1,10 @@
 package app.aaps.pump.diaconn.packet
 
+import app.aaps.core.interfaces.di.MetroMemberInjector
 import app.aaps.core.interfaces.pump.BolusProgressData
 import app.aaps.pump.diaconn.DiaconnG8Pump
 import app.aaps.shared.tests.TestBaseWithProfile
 import com.google.common.truth.Truth.assertThat
-import app.aaps.core.interfaces.di.MetroMemberInjector
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import org.junit.jupiter.api.BeforeEach
@@ -74,6 +74,35 @@ class InjectionSnackResultReportPacketTest : TestBaseWithProfile() {
         assertThat(diaconnG8Pump.bolusDone).isTrue()
         assertThat(diaconnG8Pump.bolusStopped).isTrue()
         assertThat(bolusProgressData.state.value?.delivered?.cU ?: 0.0).isEqualTo(4.5)
+    }
+
+    // A bolus given in full is no stop by the pump.
+    @Test
+    fun aBolusGivenInFullIsNotStoppedByThePump() {
+        InjectionSnackResultReportPacket(packetInjector).handleMessage(createValidPacket(result = 0, bolusAmount = 29, deliveredAmount = 29))
+
+        assertThat(diaconnG8Pump.bolusGivenInFull).isTrue()
+        assertThat(diaconnG8Pump.bolusStoppedByPump).isFalse()
+    }
+
+    // The pump gave less and the user did not stop it: the pump stopped it, as at an occlusion. Whatever the result says,
+    // as the result of such a stop was never seen on a real pump.
+    @Test
+    fun aBolusThePumpGaveLessOfIsStoppedByThePump() {
+        InjectionSnackResultReportPacket(packetInjector).handleMessage(createValidPacket(result = 2, bolusAmount = 100, deliveredAmount = 30))
+
+        assertThat(diaconnG8Pump.bolusGivenInFull).isFalse()
+        assertThat(diaconnG8Pump.bolusStoppedByPump).isTrue()
+    }
+
+    // A stop by the user is no stop by the pump.
+    @Test
+    fun aBolusTheUserStoppedIsNotStoppedByThePump() {
+        diaconnG8Pump.bolusStopForced = true
+
+        InjectionSnackResultReportPacket(packetInjector).handleMessage(createValidPacket(result = 1, bolusAmount = 100, deliveredAmount = 30))
+
+        assertThat(diaconnG8Pump.bolusStoppedByPump).isFalse()
     }
 
     @Test

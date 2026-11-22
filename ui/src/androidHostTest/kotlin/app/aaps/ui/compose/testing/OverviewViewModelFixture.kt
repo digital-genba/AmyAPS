@@ -8,6 +8,7 @@ import app.aaps.core.data.model.TB
 import app.aaps.core.data.model.TE
 import app.aaps.core.data.model.TrendArrow
 import app.aaps.core.data.pump.defs.PumpDescription
+import app.aaps.core.interfaces.aps.AutosensDataStore
 import app.aaps.core.interfaces.aps.IobTotal
 import app.aaps.core.interfaces.aps.Loop
 import app.aaps.core.interfaces.bolus.BatchExecutor
@@ -15,7 +16,6 @@ import app.aaps.core.interfaces.constraints.Constraint
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.db.ProcessedTbrEbData
-import app.aaps.core.interfaces.aps.AutosensDataStore
 import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.nsclient.ProcessedDeviceStatusData
@@ -27,19 +27,23 @@ import app.aaps.core.interfaces.overview.graph.GraphConfig
 import app.aaps.core.interfaces.overview.graph.GraphConfigRepository
 import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.profile.ProfileFunction
+import app.aaps.core.interfaces.pump.PumpInsulin
 import app.aaps.core.interfaces.pump.PumpWithConcentration
 import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.rx.bus.RxBus
+import app.aaps.core.interfaces.rx.events.EventConfigBuilderChange
 import app.aaps.core.interfaces.rx.events.EventCustomActionsChanged
 import app.aaps.core.interfaces.rx.events.EventInitializationChanged
 import app.aaps.core.interfaces.rx.events.EventNsClientStatusUpdated
-import app.aaps.core.interfaces.rx.events.EventPumpStatusChanged
 import app.aaps.core.interfaces.source.BgSource
 import app.aaps.core.interfaces.stats.TddCalculator
 import app.aaps.core.interfaces.sync.NsClient
 import app.aaps.core.interfaces.utils.DecimalFormatter
 import app.aaps.core.keys.UnitDoubleKey
+import app.aaps.core.keys.interfaces.ClientRole
 import app.aaps.core.keys.interfaces.VisibilityContext
+import app.aaps.ui.R
+import app.aaps.ui.UiStrings
 import app.aaps.ui.compose.manageSheet.FakePumpPlugin
 import app.aaps.ui.compose.manageSheet.ManageViewModel
 import app.aaps.ui.compose.overview.chips.ChipsViewModel
@@ -55,8 +59,10 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.withTimeout
 import org.mockito.kotlin.any
 import org.mockito.kotlin.anyOrNull
+import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.whenever
+import org.robolectric.RuntimeEnvironment
 
 /**
  * Builds the four **real** view models the three overview layouts share
@@ -115,6 +121,10 @@ internal class OverviewViewModelFixture(private val screen: AapsScreenFixture) {
 
     init {
         stubResourcesFromRobolectric(rh)
+        // The status ages are this module's own strings, and the shared stub knows only five other
+        // modules, so it would throw. Answered from the real resources, like everything else here.
+        doReturn(RuntimeEnvironment.getApplication().getString(R.string.status_age_short)).whenever(rh).gs(UiStrings.status_age_short)
+        doReturn(RuntimeEnvironment.getApplication().getString(R.string.status_age_short_hours)).whenever(rh).gs(UiStrings.status_age_short_hours)
 
         // ----- shared ambient -----
         whenever(screen.dateUtil.now()).thenReturn(NOW)
@@ -159,10 +169,11 @@ internal class OverviewViewModelFixture(private val screen: AapsScreenFixture) {
         whenever(bgSource.sensorBatteryLevel).thenReturn(-1)
         whenever(activePump.pumpDescription).thenReturn(pumpDescription)
         whenever(activePump.batteryLevel).thenReturn(MutableStateFlow<Int?>(null))
+        whenever(activePump.reservoirLevel).thenReturn(MutableStateFlow(PumpInsulin(0.0)))
         whenever(pumpPlugin.pumpDescription).thenReturn(pumpDescription)
         whenever(pumpPlugin.batteryLevel).thenReturn(MutableStateFlow<Int?>(null))
         whenever(rxBus.toFlow(EventInitializationChanged::class)).thenReturn(emptyFlow())
-        whenever(rxBus.toFlow(EventPumpStatusChanged::class)).thenReturn(emptyFlow())
+        whenever(rxBus.toFlow(EventConfigBuilderChange::class)).thenReturn(emptyFlow())
         whenever(rxBus.toFlow(EventNsClientStatusUpdated::class)).thenReturn(emptyFlow())
         whenever(rxBus.toFlow(EventCustomActionsChanged::class)).thenReturn(emptyFlow())
         whenever(persistenceLayer.observeChanges(TE::class)).thenReturn(emptyFlow())
@@ -170,6 +181,9 @@ internal class OverviewViewModelFixture(private val screen: AapsScreenFixture) {
         whenever(persistenceLayer.observeChanges(TB::class)).thenReturn(emptyFlow())
         whenever(persistenceLayer.databaseClearedFlow).thenReturn(emptyFlow())
         whenever(nsClient.masterOrPairedClientFlow).thenReturn(MutableStateFlow(false))
+        // A mock returns null for these, not the interface default; the Manage sheet checks the role of each element.
+        whenever(nsClient.clientRole).thenReturn(MutableStateFlow(ClientRole.Admin))
+        whenever(visibilityContext.clientRole).thenReturn(ClientRole.Admin)
     }
 
     val graphViewModel: GraphViewModel by lazy {

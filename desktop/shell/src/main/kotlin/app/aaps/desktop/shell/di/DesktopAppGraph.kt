@@ -1,21 +1,18 @@
 package app.aaps.desktop.shell.di
 
+import app.aaps.core.interfaces.alerts.EatReminder
+import app.aaps.core.interfaces.alerts.LocalAlertUtils
 import app.aaps.core.interfaces.bgQualityCheck.BgQualityCheck
-import app.aaps.core.interfaces.ui.SnackbarHostPresence
-import app.aaps.core.interfaces.ui.UiRestart
-import app.aaps.core.interfaces.constraints.Objectives
-import app.aaps.core.interfaces.notifications.NotificationManager
-import app.aaps.core.interfaces.pump.BolusProgressData
-import app.aaps.core.interfaces.queue.CommandQueue
-import app.aaps.core.interfaces.ui.UiInteraction
-import app.aaps.core.interfaces.ui.UrlOpener
-import app.aaps.core.ui.compose.pump.PumpCommunicationStatus
 import app.aaps.core.interfaces.clientcontrol.ClientControlActionDispatcher
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.configuration.ConfigBuilder
+import app.aaps.core.interfaces.constraints.Objectives
 import app.aaps.core.interfaces.db.PersistenceLayer
+import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.maintenance.PrefsFileInfo
+import app.aaps.core.interfaces.notifications.NotificationManager
+import app.aaps.core.interfaces.overview.OverviewData
 import app.aaps.core.interfaces.overview.graph.OverviewDataCache
 import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.plugin.PluginBase
@@ -25,36 +22,46 @@ import app.aaps.core.interfaces.protection.ExportPasswordDataStore
 import app.aaps.core.interfaces.protection.PasswordCheck
 import app.aaps.core.interfaces.protection.PasswordHasher
 import app.aaps.core.interfaces.protection.ProtectionCheck
+import app.aaps.core.interfaces.pump.BolusProgressData
+import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.interfaces.resources.TextResolver
 import app.aaps.core.interfaces.rx.bus.RxBus
 import app.aaps.core.interfaces.source.DexcomBoyda
 import app.aaps.core.interfaces.sync.NsClient
+import app.aaps.core.interfaces.ui.SnackbarHostPresence
+import app.aaps.core.interfaces.ui.UiInteraction
+import app.aaps.core.interfaces.ui.UiRestart
+import app.aaps.core.interfaces.ui.UrlOpener
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.DecimalFormatter
+import app.aaps.core.interfaces.workflow.CalculationSignalsEmitter
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.VisibilityContext
-import app.aaps.implementation.plugin.PluginStore
-import app.aaps.plugins.automation.AutomationRuntime
-import app.aaps.plugins.configuration.setupwizard.SWDefinition
-import app.aaps.ui.compose.overview.chips.ChipsViewModel
-import app.aaps.ui.compose.overview.graphs.GraphViewModel
-import app.aaps.ui.search.BuiltInSearchables
-import dev.zacsweers.metrox.viewmodel.MetroViewModelMultibindings
 import app.aaps.core.objects.di.CoreObjectsGraph
-import app.aaps.implementation.maintenance.PeriodicMaintenance
-import app.aaps.implementation.notifications.SnackbarNotificationFallback
-import app.aaps.shared.clientbindings.ClientGraphBindings
-import kotlinx.coroutines.CoroutineScope
+import app.aaps.core.ui.compose.pump.PumpCommunicationStatus
 import app.aaps.database.AppRepository
 import app.aaps.database.di.JvmAppDatabaseBuilder
 import app.aaps.implementation.maintenance.DesktopFolders
+import app.aaps.implementation.maintenance.PeriodicMaintenance
 import app.aaps.implementation.maintenance.cloud.AuthBrowser
-import java.io.File
+import app.aaps.implementation.notifications.SnackbarNotificationFallback
+import app.aaps.implementation.plugin.PluginStore
+import app.aaps.plugins.automation.AutomationRuntime
+import app.aaps.plugins.configuration.setupwizard.SWDefinition
+import app.aaps.shared.clientbindings.ClientGraphBindings
+import app.aaps.shared.clientbindings.ClientHistoryWindowGraph
+import app.aaps.ui.compose.history.HistoryScope
+import app.aaps.ui.compose.overview.chips.ChipsViewModel
+import app.aaps.ui.compose.overview.graphs.GraphViewModel
+import app.aaps.ui.search.BuiltInSearchables
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.DependencyGraph
 import dev.zacsweers.metro.Includes
 import dev.zacsweers.metro.Provides
 import dev.zacsweers.metro.SingleIn
+import dev.zacsweers.metrox.viewmodel.MetroViewModelMultibindings
+import kotlinx.coroutines.CoroutineScope
+import java.io.File
 
 /**
  * The real app's object graph on desktop - the counterpart of `AppRootGraph` in `:app` and
@@ -69,18 +76,13 @@ import dev.zacsweers.metro.SingleIn
  *
  * The shell depends on the same 26 modules `:ios:shell` does, so every plugin that registers itself
  * with `@ContributesBinding` is already in the graph, and the classes in `app.aaps.desktop.shell.platform`
- * answer the platform half. Measured at **1**, down from 32:
- *
- * **`Autotune`** needs its plugin ported out of androidMain: about 2,700 lines of arithmetic whose
- * only Android parts are `Calendar`/`TimeZone` and a file dump, but it computes basal, ISF and ICR,
- * so the date maths wants golden vectors rather than a quick swap.
+ * answer the platform half. Measured at **0**, down from 32. The last one was `Autotune`: its plugin
+ * is common code now, checked against golden files made by the Android code before the move, and the
+ * desktop supplies only where its files go (`DesktopAutotuneFileStore`, `~/AAPS/autotune`).
  *
  * Nightscout sync is done, websocket included. `SocketNsConnection` in `:shared:clientbindings` is
  * shared with iOS and carries the remote-control channel, so a command reaches this client as fast
  * as it reaches a phone. `DesktopNsLoadExecutor` still runs the REST round the plugin asks for.
- *
- * **Needs a port rather than an implementation:** `Autotune`, whose `AutotunePlugin` is arithmetic
- * over treatment history sitting in androidMain.
  *
  * Settings import and export is no longer on this list. `LocalImportExportPrefs` in `commonMain`
  * carries the whole flow, and desktop supplies only the file access - see `_docs/desktop_alignment.md`.
@@ -119,8 +121,16 @@ interface DesktopAppGraph : MetroViewModelMultibindings {
     val configBuilder: ConfigBuilder
     // The periodic housekeeping shared with Android, and the scope the shell drives it on.
     val periodicMaintenance: PeriodicMaintenance
+
+    /**
+     * The local alarms, for one call Android makes and this shell has to make too:
+     * `preSnoozeAlarms` holds the stale-data alarm back for five minutes so the first Nightscout
+     * round can land before the database is judged out of date.
+     */
+    val localAlertUtils: LocalAlertUtils
     // Turns a snackbar into a notification when no screen is up to show it. Shared with Android.
     val snackbarNotificationFallback: SnackbarNotificationFallback
+    val eatReminder: EatReminder
     val appScope: CoroutineScope
 
     /** Collected by the composition root, which rebuilds when it moves. */
@@ -156,6 +166,28 @@ interface DesktopAppGraph : MetroViewModelMultibindings {
     val graphViewModelFactory: GraphViewModel.Factory
     val chipsViewModelFactory: ChipsViewModel.Factory
     val overviewDataCache: OverviewDataCache
+
+    /**
+     * The factory for a history browsing window, the same one iOS uses.
+     *
+     * Declared here rather than discovered: a `@GraphExtension` is only reachable through an accessor
+     * its parent graph states. Without it `ClientGraphBindings.historyScope` has no factory to call.
+     * Each window is a separate scope with its own calculation objects - see
+     * [ClientHistoryWindowGraph] for why that matters.
+     */
+    val historyWindowFactory: ClientHistoryWindowGraph.Factory
+
+    /** The loop's own calculator, exposed so a test can prove a window does not share it. */
+    val iobCobCalculator: IobCobCalculator
+
+    /** The loop's own overview data, exposed for the same test. */
+    val overviewData: OverviewData
+
+    /** The loop's own calculation signals, exposed for the same test. */
+    val calculationSignals: CalculationSignalsEmitter
+
+    /** What the History Browser is given, exposed so a test can check it is a window and not the loop. */
+    val historyScope: HistoryScope
 
     /** The app's own database, inside this client's own data directory so two clients never share one. */
     @Provides

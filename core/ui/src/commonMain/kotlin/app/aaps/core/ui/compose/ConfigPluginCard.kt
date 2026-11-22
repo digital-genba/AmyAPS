@@ -32,8 +32,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.unit.dp
 import app.aaps.core.ui.CoreUiStrings
 
@@ -89,10 +93,12 @@ fun ConfigPluginCard(
         SelectionMode.MULTI_SELECT  -> true
     }
 
+    // Not an AapsCard: it is a checkbox or radio button with its own semantics, a border and an enabled
+    // state. The same container colour as AapsCard, so it stands out from the background as much.
     val colors = if (selected) {
         CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
     } else {
-        CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+        CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
     }
     val border = if (selected) {
         BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
@@ -111,11 +117,26 @@ fun ConfigPluginCard(
             // cannot help: both are passed a null click handler, which in Material3 means they
             // produce no semantics node at all and are pure decoration.
             //
-            // Reported through the platform's own selected state rather than a string of ours, so
-            // the screen reader says it in the user's language with nothing to translate.
-            // `this.` because this file already has a local val named selected, which would
-            // otherwise win here and fail to compile.
-            .semantics { this.selected = plugin.isEnabled }
+            // Reported through the platform's own states rather than a string of ours, so the screen
+            // reader says it in the user's language with nothing to translate. The card takes the
+            // role of the control it shows: a checkbox says "checked" / "not checked", and says the
+            // new state after a double-tap. A bare `selected` was silent for a plugin that is off,
+            // so switching a plugin off sounded like nothing had happened.
+            .semantics {
+                when (selectionMode) {
+                    SelectionMode.MULTI_SELECT  -> {
+                        role = Role.Checkbox
+                        toggleableState = ToggleableState(plugin.isEnabled)
+                    }
+
+                    SelectionMode.SINGLE_SELECT -> {
+                        role = Role.RadioButton
+                        // `this.` because this file already has a local val named selected, which
+                        // would otherwise win here and fail to compile.
+                        this.selected = plugin.isEnabled
+                    }
+                }
+            }
             .padding(horizontal = AapsSpacing.medium, vertical = AapsSpacing.small),
         colors = colors,
         border = border,

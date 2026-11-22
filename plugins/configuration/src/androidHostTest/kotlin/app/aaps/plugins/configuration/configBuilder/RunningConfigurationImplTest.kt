@@ -1,6 +1,11 @@
 package app.aaps.plugins.configuration.configBuilder
 
+import app.aaps.core.data.pump.defs.PumpDescription
+import app.aaps.core.data.pump.defs.PumpType
+import app.aaps.core.interfaces.alerts.EatReminder
+import app.aaps.core.interfaces.alerts.EatReminderState
 import app.aaps.core.interfaces.configuration.Config
+import app.aaps.core.interfaces.constraints.Constraint
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.notifications.NotificationManager
@@ -8,18 +13,26 @@ import app.aaps.core.interfaces.nsclient.NSClientRepository
 import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.pump.Pump
 import app.aaps.core.interfaces.pump.PumpSync
+import app.aaps.core.interfaces.pump.PumpWithConcentration
 import app.aaps.core.interfaces.pump.VirtualPump
 import app.aaps.core.interfaces.scenes.ActiveSceneSnapshot
 import app.aaps.core.interfaces.scenes.ActiveSceneSync
 import app.aaps.core.keys.BooleanNonKey
 import app.aaps.core.keys.DoubleKey
+import app.aaps.core.keys.StringKey
 import app.aaps.core.keys.StringNonKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.SyncChannel
 import app.aaps.core.keys.interfaces.SyncDirection
 import app.aaps.core.nssdk.localmodel.configuration.NSActiveScene
+import app.aaps.core.nssdk.localmodel.configuration.NSEatReminder
 import app.aaps.core.nssdk.localmodel.configuration.NSRunningConfiguration
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.Mock
@@ -50,6 +63,9 @@ internal class RunningConfigurationImplTest {
     @Mock private lateinit var notificationManager: NotificationManager
     @Mock private lateinit var nsClientRepository: NSClientRepository
     @Mock private lateinit var constraintsChecker: ConstraintsChecker
+    @Mock private lateinit var eatReminder: EatReminder
+
+    private val eatReminderState = MutableStateFlow<EatReminderState?>(null)
 
     private lateinit var sut: RunningConfigurationImpl
 
@@ -57,17 +73,55 @@ internal class RunningConfigurationImplTest {
     fun setUp() {
         MockitoAnnotations.openMocks(this)
         whenever(config.AAPSCLIENT).thenReturn(true)
+        whenever(eatReminder.state).thenReturn(eatReminderState)
         sut = RunningConfigurationImpl(
             activePlugin, activeSceneSync,
-            preferences, aapsLogger, config, pumpSync, notificationManager, nsClientRepository, constraintsChecker
+            preferences, aapsLogger, config, pumpSync, notificationManager, nsClientRepository, constraintsChecker, eatReminder
         )
     }
 
-    /** Empty cold doc — nothing to apply, and crucially the active scene is left alone. */
+    /** Empty cold doc — nothing to apply, and crucially the active scene and the eat timer are left alone. */
     @Test
     fun applyColdEmptyDoesNotTouchActiveScene() {
         sut.applyCold(NSRunningConfiguration())
         verify(activeSceneSync, never()).applyActiveScene(anyOrNull())
+        verify(eatReminder, never()).applyRemote(anyOrNull())
+    }
+
+    /** The master's "time to eat" timer rides the hot doc, so a client can show its bar. */
+    @Test
+    fun theHotDocCarriesTheEatReminder() {
+        eatReminderState.value = EatReminderState(startedAt = 1_000L, endsAt = 1_201_000L, durationMs = 1_200_000L)
+
+        val wire = sut.hotConfiguration()["eatReminder"]?.jsonObject
+
+        assertEquals(JsonPrimitive(1_000L), wire?.get("startedAt"))
+        assertEquals(JsonPrimitive(1_201_000L), wire?.get("endsAt"))
+        assertEquals(JsonPrimitive(1_200_000L), wire?.get("durationMs"))
+    }
+
+    @Test
+    fun theHotDocHasNoEatReminderWithoutATimer() {
+        assertNull(sut.hotConfiguration()["eatReminder"])
+    }
+
+    /** A change of the timer publishes the hot doc, like a scene change. */
+    @Test
+    fun theEatReminderIsAHotKey() {
+        assertTrue(StringNonKey.EatReminder in sut.hotKeys())
+    }
+
+    @Test
+    fun applyHotTakesTheTimerOfTheMaster() {
+        sut.applyHot(NSRunningConfiguration(eatReminder = NSEatReminder(startedAt = 1_000L, endsAt = 1_201_000L, durationMs = 1_200_000L)))
+        verify(eatReminder).applyRemote(eq(EatReminderState(startedAt = 1_000L, endsAt = 1_201_000L, durationMs = 1_200_000L)))
+    }
+
+    /** No timer in the hot doc ends the client's copy: the master stopped it, or an older master has none. */
+    @Test
+    fun applyHotWithoutATimerEndsTheCopy() {
+        sut.applyHot(NSRunningConfiguration())
+        verify(eatReminder).applyRemote(isNull())
     }
 
     /**
@@ -86,9 +140,33 @@ internal class RunningConfigurationImplTest {
     /** The hot doc owns scene state: a null activeScene clears it (master-side dismissal propagates). */
     @Test
     fun applyHotWithNullActiveSceneClearsIt() {
-        sut.applyHot(NSRunningConfiguration(activeScene = null, usedAutosensOnMainPhone = true))
+        sut.applyHot(NSRunningConfiguration(activeScene = null))
         verify(activeSceneSync, times(1)).applyActiveScene(isNull())
-        verify(preferences).put(eq(BooleanNonKey.AutosensUsedOnMainPhone), eq(true))
+    }
+
+    /**
+     * Whether autosens is used is worked out from cold settings, so it goes in the cold doc. In the hot doc, which is
+     * sent only when the scene changes, switching autosens off on the master did not reach the client.
+     */
+    @Test
+    fun theColdDocCarriesWhetherAutosensIsUsedAndTheHotDocDoesNot() {
+        val pump = mock<PumpWithConcentration>()
+        whenever(config.appInitialized).thenReturn(true)
+        whenever(config.VERSION_NAME).thenReturn("3.4.0")
+        whenever(activePlugin.activePump).thenReturn(pump)
+        whenever(pump.isInitialized()).thenReturn(true)
+        whenever(pump.model()).thenReturn(PumpType.GENERIC_AAPS)
+        val autosens = mock<Constraint<Boolean>>().also { whenever(it.value()).thenReturn(false) }
+        whenever(constraintsChecker.isAutosensModeEnabled()).thenReturn(autosens)
+
+        assertEquals(JsonPrimitive(false), sut.configuration()["usedAutosensOnMainPhone"])
+        assertNull(sut.hotConfiguration()["usedAutosensOnMainPhone"])
+    }
+
+    @Test
+    fun applyColdPutsWhetherAutosensIsUsedOnTheMaster() {
+        sut.applyCold(NSRunningConfiguration(usedAutosensOnMainPhone = false))
+        verify(preferences).put(eq(BooleanNonKey.AutosensUsedOnMainPhone), eq(false))
     }
 
     /** The hot doc applies a present scene snapshot. */
@@ -98,6 +176,25 @@ internal class RunningConfigurationImplTest {
         sut.applyHot(NSRunningConfiguration(activeScene = scene))
         verify(activeSceneSync).applyActiveScene(
             eq(ActiveSceneSnapshot(sceneId = "scene-1", activatedAt = 1_000L, durationMs = 60_000L))
+        )
+    }
+
+    /**
+     * The skipped follow-up is said on the banner and nowhere else, so a client that does not carry the
+     * reason over would show an ended scene with no word about the scene that never started.
+     */
+    @Test
+    fun theReasonAFollowUpDidNotStartTravelsToTheClient() {
+        whenever(activeSceneSync.activeSceneSnapshot()).thenReturn(
+            ActiveSceneSnapshot(sceneId = "scene-1", activatedAt = 1_000L, durationMs = 60_000L, chainSkipReason = "the next scene is disabled")
+        )
+
+        val wire = sut.hotConfiguration()["activeScene"]?.jsonObject
+        assertEquals(JsonPrimitive("the next scene is disabled"), wire?.get("chainSkipReason"))
+
+        sut.applyHot(NSRunningConfiguration(activeScene = NSActiveScene(sceneId = "scene-1", activatedAt = 1_000L, durationMs = 60_000L, chainSkipReason = "the next scene is disabled")))
+        verify(activeSceneSync).applyActiveScene(
+            eq(ActiveSceneSnapshot(sceneId = "scene-1", activatedAt = 1_000L, durationMs = 60_000L, chainSkipReason = "the next scene is disabled"))
         )
     }
 
@@ -160,6 +257,24 @@ internal class RunningConfigurationImplTest {
     }
 
     /**
+     * The pump type of the master goes into the driver's own description. Through the concentration wrapper
+     * it would go into a copy when the insulin is not U100, and be lost.
+     */
+    @Test
+    fun applyColdPutsThePumpTypeOfTheMasterIntoTheDriversOwnDescription() {
+        val description = PumpDescription()
+        val driver = mock<Pump>()
+        whenever(driver.pumpDescription).thenReturn(description)
+        whenever(activePlugin.activePumpInternal).thenReturn(driver)
+        whenever(preferences.get(StringKey.VirtualPumpType)).thenReturn("Generic AAPS")
+
+        sut.applyCold(NSRunningConfiguration(pump = "Accu-Chek Combo"))
+
+        assertEquals(PumpType.ACCU_CHEK_COMBO, description.pumpType)
+        verify(activePlugin, never()).activePump
+    }
+
+    /**
      * Pre-init guard: before init completes no pump is selected, and activePump.isInitialized() would throw
      * "No pump selected" (PluginStore.activePumpInternal). configuration() must short-circuit to an empty doc
      * without touching the pump — RunningConfigurationPublisher then skips the empty payload and retries.
@@ -170,5 +285,45 @@ internal class RunningConfigurationImplTest {
         val result = sut.configuration()
         assertEquals(0, result.size)
         verify(activePlugin, never()).activePump
+    }
+
+    private fun pumpThatIsInitialized(initialized: Boolean): PumpWithConcentration {
+        val pump = mock<PumpWithConcentration>()
+        whenever(config.appInitialized).thenReturn(true)
+        whenever(config.VERSION_NAME).thenReturn("4.0.0")
+        whenever(activePlugin.activePump).thenReturn(pump)
+        whenever(pump.isInitialized()).thenReturn(initialized)
+        whenever(pump.model()).thenReturn(PumpType.GENERIC_AAPS)
+        val autosens = mock<Constraint<Boolean>>().also { whenever(it.value()).thenReturn(false) }
+        whenever(constraintsChecker.isAutosensModeEnabled()).thenReturn(autosens)
+        return pump
+    }
+
+    /**
+     * A pod change, or a pump not paired yet, must not stop the doc. The client-control switch travels in `syncedPrefs`:
+     * without it a client shows a master that is online as offline, or says that client control is off.
+     */
+    @Test
+    fun aPumpThatIsNotInitializedLeavesOutOnlyWhatComesFromThePump() {
+        pumpThatIsInitialized(false)
+
+        val doc = sut.configuration()
+
+        assertTrue("syncedPrefs" in doc)
+        assertEquals(JsonPrimitive("4.0.0"), doc["version"])
+        assertEquals(JsonPrimitive(false), doc["usedAutosensOnMainPhone"])
+        assertNull(doc["pump"])
+        assertNull(doc["isFakingTempsByExtendedBoluses"])
+    }
+
+    @Test
+    fun anInitializedPumpSendsItsTypeAndFakingFlag() {
+        val pump = pumpThatIsInitialized(true)
+        whenever(pump.isFakingTempsByExtendedBoluses).thenReturn(true)
+
+        val doc = sut.configuration()
+
+        assertEquals(JsonPrimitive(PumpType.GENERIC_AAPS.description), doc["pump"])
+        assertEquals(JsonPrimitive(true), doc["isFakingTempsByExtendedBoluses"])
     }
 }

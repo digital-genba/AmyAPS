@@ -1,10 +1,11 @@
 package app.aaps.ios.shell.config
 
-import app.aaps.core.keys.interfaces.AppPlatform
-import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.configuration.ExternalOptions
 import app.aaps.core.interfaces.configuration.InitProgress
+import app.aaps.core.keys.interfaces.AppPlatform
+import app.aaps.core.keys.interfaces.TextRef
+import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -12,12 +13,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.cinterop.ExperimentalForeignApi
 import platform.Foundation.NSBundle
-import platform.Foundation.NSUserDomainMask
 import platform.Foundation.NSDocumentDirectory
-import platform.Foundation.NSSearchPathForDirectoriesInDomains
 import platform.Foundation.NSFileManager
+import platform.Foundation.NSSearchPathForDirectoriesInDomains
+import platform.Foundation.NSUserDomainMask
 import platform.UIKit.UIDevice
 
 /**
@@ -85,11 +85,13 @@ class IosClientConfig(
     /** Anything that is not a release build is treated as a debug one, which is the safe way round. */
     override val DEBUG: Boolean = BUILD_TYPE != "release"
 
-    // Filled by the build on Android. iOS has no equivalent wired up yet, and saying so plainly is
-    // better than inventing a commit hash.
-    override val HEAD: String = "unknown"
-    override val COMMITTED: Boolean = true
-    override val REMOTE: String = "unknown"
+    // Filled by the build, the same three facts Android has sent since 2019: which commit, which
+    // repository, and whether the tree was clean. Together they are what tells a crash report from
+    // upstream apart from one out of a fork. A build with no git says "NoGitSystemAvailable" and
+    // reports not-committed, rather than inventing a commit or claiming a clean tree.
+    override val HEAD: String = GeneratedBuildInfo.HEAD
+    override val COMMITTED: Boolean = GeneratedBuildInfo.COMMITTED
+    override val REMOTE: String = GeneratedBuildInfo.REMOTE
 
     override val currentDeviceModelString: String =
         UIDevice.currentDevice.let { "${it.model} ${it.systemName} ${it.systemVersion}" }

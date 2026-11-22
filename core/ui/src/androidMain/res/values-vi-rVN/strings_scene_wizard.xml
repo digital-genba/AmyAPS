@@ -25,7 +25,7 @@
     <!-- Pre-meal: TT 90 (Eating Soon) — 30m -->
     <string name="scene_template_pre_meal">Trước bữa ăn</string>
     <string name="scene_wizard_pre_meal_desc">Giảm mục tiêu để đón trước mức tăng đường huyết sau bữa ăn.</string>
-    <string name="scene_wizard_info_pre_meal">Việc đặt mục tiêu thấp hơn khoảng 30–60 phút trước khi ăn sẽ giúp thuật toán bắt đầu “tích lũy” insulin đang hoạt động (IOB) trước khi carbohydrate được hấp thu. Điều này giúp giảm mức tăng đường huyết sau ăn, xảy ra khi thức ăn vào máu nhanh hơn so với tốc độ tác dụng của insulin. Hiệu quả nhất khi bạn biết trước sắp có bữa ăn.</string>
+    <string name="scene_wizard_info_pre_meal">Thiết lập mục tiêu đường huyết thấp hơn từ 30–60 phút trước khi ăn sẽ giúp thuật toán bắt đầu tăng lượng insulin còn tác dụng trước khi carbs được hấp thụ. Điều này giúp hạn chế tình trạng đường huyết tăng đột biến sau ăn, xảy ra khi thức ăn được hấp thụ vào máu nhanh hơn tốc độ insulin phát huy tác dụng. Nên sử dụng khi bạn biết mình sắp ăn.</string>
     <!-- Alcohol: TT 120 (Hypo), Profile 80%, Loop LGS, SMB off, Alcohol CP — 12h -->
     <string name="scene_template_alcohol">Rượu bia</string>
     <string name="scene_wizard_alcohol_desc">Chế độ LGS, giảm cấu hình, tắt SMB — giúp bảo vệ khỏi hạ đường huyết muộn do rượu bia.</string>
@@ -54,7 +54,7 @@
     <string name="scene_template_blank">Trống</string>
     <string name="scene_wizard_blank_desc">Bắt đầu lại từ đầu, không sử dụng hành động được chọn sẵn.</string>
     <!-- Scene wizard: action step education -->
-    <string name="scene_wizard_profile_info" formatted="false">Việc chuyển đổi cấu hình sẽ thay đổi đồng thời tỷ lệ liều nền, hệ số nhạy insulin (ISF) và tỷ lệ insulin-carb (IC). Bạn có thể điều chỉnh toàn bộ theo phần trăm — ví dụ: 110% sẽ tăng basal, tính toán bolus và tốc độ hấp thụ carb thêm 10%. Bạn cũng có thể chuyển sang một cấu hình hoàn toàn khác nếu đã thiết lập sẵn cho các tình huống cụ thể.</string>
+    <string name="scene_wizard_profile_info" formatted="false">Việc chuyển đổi cấu hình sẽ đồng thời thay đổi tốc độ liều nền, hệ số nhạy insulin (ISF) và tỷ lệ insulin/carbs (IC). Bạn có thể điều chỉnh tất cả các thông số theo tỷ lệ phần trăm — ví dụ, mức 110% sẽ tăng lượng insulin nền được phân phối, lượng insulin tính toán cho liều bolus và tốc độ hấp thụ carbs lên khoảng 10%. Bạn cũng có thể chuyển hẳn sang một cấu hình khác nếu đã thiết lập cấu hình riêng cho những tình huống cụ thể.</string>
     <string name="scene_wizard_tt_info">Mục tiêu tạm thời cho thuật toán biết rằng cần hướng tới một mức đường huyết khác trong một khoảng thời gian nhất định. Với mục tiêu cao hơn, thuật toán sẽ phản ứng chậm hơn với sự tăng đường huyết và duy trì mức đường huyết cao hơn tổng thể — điều này làm giảm lượng insulin được đưa vào và giúp ngăn hạ đường huyết khi vận động. Với mục tiêu thấp hơn, thuật toán phản ứng sớm hơn và đưa nhiều insulin hơn — hữu ích để kiểm soát trước bữa ăn. Hãy chọn một trong các thiết lập sẵn bên dưới — giá trị mục tiêu và lý do đã được thiết lập sẵn.</string>
     <string name="scene_wizard_smb_info">Super Micro Bolus (SMB) cho phép thuật toán đưa insulin sớm dưới dạng các liều bolus nhỏ, đồng thời tạm dừng insulin nền để bù lại — về cơ bản là “mượn insulin từ tương lai” để phản ứng nhanh hơn. Việc tắt SMB sẽ ngăn cơ chế này và giới hạn thuật toán chỉ điều chỉnh insulin nền. Khi đó phản ứng sẽ chậm hơn và diễn ra từ từ hơn, thường được ưu tiên trong khi tập thể dục hoặc khi ngủ.</string>
     <string name="scene_wizard_loop_mode_info">Chế độ thể dục quyết định mức độ tự động của thuật toán. Ở chế độ vòng lặp kín, hệ thống tự động điều chỉnh việc cung cấp insulin. LGS (Low Glucose Suspend) chỉ giảm hoặc ngừng insulin khi đường huyết đang giảm về mức thấp — và sẽ không tăng insulin. Vòng lặp mở chỉ đưa ra đề xuất và chờ bạn xác nhận từng thay đổi.</string>
@@ -66,16 +66,14 @@
     <string name="scene_wizard_finish">Kết thúc</string>
     <!-- Scene wizard: chain step -->
     <string name="scene_wizard_chain_title">Theo dõi ngữ cảnh</string>
-    <string name="scene_wizard_chain_info">Tùy chọn nối thêm một tình huống khác để tự động kích hoạt khi tình huống này hết thời gian. Bạn cũng có thể chuyển sang tình huống đó khi kết thúc sớm. Tình huống tiếp theo chỉ chạy nếu mục tiêu được bật và bơm insulin sẵn sàng; nếu không, bạn sẽ nhận được thông báo.</string>
+    <string name="scene_wizard_chain_info">Bạn có thể tùy chọn liên kết với một ngữ cảnh khác để tự động kích hoạt khi ngữ cảnh hiện tại hết hạn. Bạn cũng có thể chuyển sang ngữ cảnh đó khi kết thúc sớm. Ngữ cảnh tiếp theo chỉ được kích hoạt nếu đã được bật và bơm khả dụng; nếu không, biểu ngữ của ngữ cảnh vừa kết thúc sẽ cho biết lý do ngữ cảnh tiếp theo không được kích hoạt.</string>
     <string name="scene_chain_none">Không</string>
     <string name="scene_skip_to_format">Chuyển sang %1$s</string>
     <!-- Scene list: chain indicator -->
     <string name="scene_chain_indicator">→ %1$s</string>
     <string name="scene_chain_target_missing">Ngữ cảnh liên kết đã bị xóa</string>
-    <!-- Scene expiry: chain result notifications -->
-    <string name="scene_ended_format">Ngữ cảnh \"%1$s\" đã kết thúc</string>
-    <string name="scene_chained_format">Ngữ cảnh liên kết: %1$s → %2$s</string>
-    <string name="scene_chain_ended_with_skip">%1$s đã kết thúc — bỏ qua bước tiếp theo: %2$s</string>
+    <!-- Scene expiry: what the banner says, and the chain error notification -->
+    <string name="scene_chain_skipped_line" comment="Shown on the banner of a scene that has ended. %1$s=why the next scene did not start. Example: Follow-up did not start: target scene was deleted">Việc theo dõi chưa bắt đầu: %1$s</string>
     <string name="scene_chain_skipped_deleted">ngữ cảnh mục tiêu đã bị xóa</string>
     <string name="scene_chain_skipped_disabled">\"%1$s\" đã bị vô hiệu hóa</string>
     <string name="scene_chain_error_summary">%1$s → %2$s: %3$d trong %4$d hành động thất bại</string>

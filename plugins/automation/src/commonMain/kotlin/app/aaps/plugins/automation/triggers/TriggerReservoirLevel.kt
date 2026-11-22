@@ -1,13 +1,13 @@
 package app.aaps.plugins.automation.triggers
 
-import app.aaps.core.keys.interfaces.TextRef
-import app.aaps.plugins.automation.AutomationStrings
 import app.aaps.core.data.format.NumberFormat
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.navigation.ElementType
+import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.ui.compose.icons.IcPumpCartridge
 import app.aaps.core.utils.lenientDouble
 import app.aaps.core.utils.lenientStringOrNull
+import app.aaps.plugins.automation.AutomationStrings
 import app.aaps.plugins.automation.elements.Comparator
 import app.aaps.plugins.automation.elements.InputDouble
 import kotlinx.serialization.json.JsonObject
@@ -42,7 +42,11 @@ class TriggerReservoirLevel(deps: TriggerDeps) : Trigger(deps) {
             aapsLogger.debug(LTag.AUTOMATION, "NOT ready for execution, no insulin in use: " + friendlyDescription())
             return false
         }
-        val actualReservoirLevel = activePlugin.activePump.reservoirLevel.value.iU(iCfg.concentration)
+        // Not known, as after an app start before the pump was read: that is no empty reservoir.
+        val actualReservoirLevel = activePlugin.activePump.reservoirLevel.value?.iU(iCfg.concentration) ?: run {
+            aapsLogger.debug(LTag.AUTOMATION, "NOT ready for execution, reservoir not known: " + friendlyDescription())
+            return false
+        }
         if (comparator.value.check(actualReservoirLevel, reservoirLevel.value)) {
             aapsLogger.debug(LTag.AUTOMATION, "Ready for execution: " + friendlyDescription())
             return true

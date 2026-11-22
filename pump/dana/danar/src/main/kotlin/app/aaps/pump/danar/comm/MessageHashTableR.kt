@@ -1,8 +1,8 @@
 package app.aaps.pump.danar.comm
 
 import app.aaps.core.interfaces.di.MetroMemberInjector
-import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.AppScope
+import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.SingleIn
 
 @SingleIn(AppScope::class)
@@ -76,6 +76,6 @@ class MessageHashTableR(
     }
 
     override fun findMessage(command: Int): MessageBase {
-        return messages[command] ?: MessageBase(injector)
+        return messages[command] ?: MessageBase(injector).also { it.setCommand(command) }
     }
 }

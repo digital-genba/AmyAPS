@@ -61,6 +61,8 @@
     <string name="pref_prime_in_menu">菜单中的充盈</string>
     <string name="pref_single_target">单一目标</string>
     <string name="pref_wizard_percentage">计算百分比</string>
+    <string name="pref_wizard_carbs_type">计算器餐食类型</string>
+    <string name="pref_wizard_carb_time">计算器碳水时间</string>
     <string name="pref_complication_tap_action">折叠Tap操作</string>
     <string name="pref_complication_bg_graph_hours">血糖图表时间范围</string>
     <string name="duration_1_hour">1 小时</string>
@@ -97,6 +99,7 @@
     <string name="action_user_action_confirmation">请求用户操作</string>
     <string name="action_scene_confirmation">情景请求</string>
     <string name="scene_end">结束</string>
+    <string name="scene_skip" comment="Scene tile button: end the active scene and start its follow-up scene. The follow-up's name is shown under it.">跳过</string>
     <string name="action_treatment_confirmation">治疗请求</string>
     <string name="action_bolus_confirmation">大剂量请求</string>
     <string name="action_wizard_confirmation">计算请求</string>
@@ -176,7 +179,7 @@
     <string name="cwf_complication_layout">小工具布局</string>
     <string name="cwf_complication_layout_description">小工具的位置和大小，取自所加载的自定义表盘。</string>
     <string name="pref_include_external">在模板中包含外部视图</string>
-    <string name="pref_switch_external">在表盘中切换外部数据</string>
+    <string name="pref_switch_external">切换表盘外部数据</string>
     <string name="custom_pref_show_seconds">显示秒</string>
     <string name="digitalstyle_pref_your_style">您的样式</string>
     <string name="digitalstyle_style_none">无样式</string>
@@ -190,6 +193,8 @@
     <string name="bolus_progress_silent_channel_name">AAPS大剂量输注禁音</string>
     <string name="bolus_progress_channel_description">大剂量输注与取消</string>
     <string name="bolus_progress_silent_channel_description">大剂量输注与取消时较少振动</string>
+    <string name="open_loop_channel_name">AAPS 开环</string>
+    <string name="open_loop_channel_description">开环请求通知</string>
     <string name="simple_ui_off">关闭</string>
     <string name="simple_ui_charging">充电中</string>
     <string name="simple_ui_always_on">总是打开模式</string>
@@ -279,6 +284,27 @@
     <string name="title_activity_disconnect_pump">断开泵连接</string>
     <string name="title_activity_suspend_loop">暂停闭环</string>
     <string name="wizard_carbs_short" comment="%1$d=grams. Example: 30 g">%1$d g</string>
+    <string name="wizard_carbs_type">餐食类型</string>
+    <string name="wizard_carbs_type_bread">面包</string>
+    <string name="wizard_carbs_type_cake">蛋糕</string>
+    <string name="wizard_carbs_type_pizza">披萨</string>
+    <string name="wizard_carb_time" comment="Label under the carb time value on the watch, between the - and + buttons, so it must stay short: two lines of about 9 characters each, \n is the line break. Example: Carb time / [min]">碳水时间\n[分]</string>
+    <string name="wizard_carb_time_now">现在</string>
+    <string name="wizard_carb_time_offset" comment="Minutes from now until the carbs are eaten, with the sign. %1$d=minutes. Example: +15">%1$+d</string>
+    <string name="wizard_result_carb_time" comment="The carb time on the request page. %1$d=minutes with the sign. Example: +15 min">%1$+d 分</string>
+    <string name="wizard_set_alarm">设置闹钟</string>
+    <string name="eat_reminder_title">吃饭时间</string>
+    <string name="eat_reminder_silence">静音</string>
+    <string name="eat_reminder_stop">停止</string>
+    <string name="eat_reminder_rings_at" comment="The running eat reminder in the notification stream. %1$s=time of day. Example: Rings at 19:25">在 %1$s 响铃</string>
+    <string name="eat_reminder_countdown_channel">进餐时间到了，正在运行</string>
+    <string name="eat_reminder_channel_silent">勿扰模式期间的进餐提醒</string>
+    <string name="eat_reminder_extend" comment="Button that moves the eat reminder later. %1$d=minutes. Example: +5 min">+%1$d min</string>
+    <string name="phone_alarm_channel">来自手机的警报</string>
+    <string name="phone_alarm_channel_silent">勿扰模式期间来自手机的警报</string>
+    <string name="phone_alarm_silence">静音</string>
+    <string name="phone_alarm_mute" comment="Button on the phone alarm's notification: silence now, the alarm rings again after the minutes. %1$d=minutes. Example: Mute 5 min">静音 %1$d 分</string>
+    <string name="wizard_carbs_split" comment="Carbs of a cake or pizza meal: the part eaten now plus the eCarbs part. %1$d=grams now, %2$d=grams as eCarbs. Example: 52+22 g">%1$d+%2$d g</string>
     <string name="insulin_unit_short">U</string>
     <string name="quick_wizard_tile_carbs" comment="QuickWizard tile sub-label, carbs amount. %1$d=grams. Example: 30 g">%1$d g</string>
     <string name="quick_wizard_tile_insulin" comment="QuickWizard tile sub-label, fixed insulin amount. %1$.2f=units. Example: 1.50 U">%1$.2f U</string>
@@ -317,6 +343,18 @@
     <string name="loop_status_target_range">范围</string>
     <string name="loop_status_target">目标</string>
     <string name="loop_status_adjusted_target">已调整目标</string>
+    <string name="loop_status_scene_until_ended" comment="Shown under a scene that has no end time and runs until the user ends it">直到结束</string>
+    <string name="loop_status_scene_ended">已结束</string>
+    <string name="loop_status_scene_follow_up" comment="Row label; the value is the name of the scene that starts when the active one ends">后续</string>
+    <string name="loop_status_profile">配置文件</string>
+    <string name="loop_status_no_profile">未设置配置文件</string>
+    <string name="loop_status_profile_percentage">百分比</string>
+    <string name="loop_status_profile_timeshift">时间偏移</string>
+    <string name="loop_status_profile_returns_to" comment="Row label; the value is the name of the profile that is in force again when the temporary profile switch ends">返回至</string>
+    <string name="loop_status_profile_percentage_value" comment="%1$d=percentage. Example: 120%">%1$d%%</string>
+    <string name="loop_status_profile_timeshift_value" comment="%1$d=whole hours, shown with its sign. Example: +2h or -1h">%1$+dh</string>
+    <string name="loop_status_sensitivity">灵敏度</string>
+    <string name="loop_status_set_by_scene" comment="Content description of the small scene icon shown beside a temp target or profile switch that the active scene made">由当前激活的情景模式设定</string>
     <string name="loop_status">闭环状态</string>
     <string name="loop_status_refresh">刷新</string>
     <string name="confirm">确认</string>

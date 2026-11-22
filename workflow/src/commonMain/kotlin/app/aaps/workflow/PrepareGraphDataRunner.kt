@@ -1,14 +1,10 @@
 package app.aaps.workflow
 
-import app.aaps.core.objects.workflow.WorkOutcome
-import dev.zacsweers.metro.Inject
-import kotlin.time.Instant
-import kotlinx.datetime.toLocalDateTime
-import kotlinx.datetime.TimeZone
 import app.aaps.core.data.aps.SMBDefaults
 import app.aaps.core.data.configuration.Constants
 import app.aaps.core.data.model.CA
 import app.aaps.core.data.model.TE
+import app.aaps.core.data.time.SystemTimeZone
 import app.aaps.core.data.time.T
 import app.aaps.core.interfaces.aps.AutosensData
 import app.aaps.core.interfaces.aps.AutosensDataStore
@@ -16,13 +12,9 @@ import app.aaps.core.interfaces.aps.AutosensResult
 import app.aaps.core.interfaces.aps.IobTotal
 import app.aaps.core.interfaces.calibration.CalibrationContext
 import app.aaps.core.interfaces.concurrent.withLock
-import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.db.PersistenceLayer
-import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
-import app.aaps.core.interfaces.nsclient.ProcessedDeviceStatusData
-import app.aaps.core.interfaces.overview.OverviewData
 import app.aaps.core.interfaces.overview.graph.AbsIobGraphData
 import app.aaps.core.interfaces.overview.graph.ActivityGraphData
 import app.aaps.core.interfaces.overview.graph.BgDataPoint
@@ -37,11 +29,11 @@ import app.aaps.core.interfaces.overview.graph.DeviationType
 import app.aaps.core.interfaces.overview.graph.DeviationsGraphData
 import app.aaps.core.interfaces.overview.graph.GraphDataPoint
 import app.aaps.core.interfaces.overview.graph.IobGraphData
-import app.aaps.core.interfaces.overview.graph.OverviewDataCache
 import app.aaps.core.interfaces.overview.graph.RatioGraphData
 import app.aaps.core.interfaces.overview.graph.TimeRange
 import app.aaps.core.interfaces.overview.graph.VarSensGraphData
 import app.aaps.core.interfaces.plugin.ActivePlugin
+import app.aaps.core.interfaces.profile.EffectiveProfile
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.profile.ProfileUtil
 import app.aaps.core.interfaces.profiling.Profiler
@@ -50,30 +42,32 @@ import app.aaps.core.interfaces.rx.events.EventAutosensCalculationFinished
 import app.aaps.core.interfaces.rx.events.EventBucketedDataCreated
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.DecimalFormatter
-import app.aaps.core.interfaces.workflow.CalculationSignalsEmitter
 import app.aaps.core.interfaces.workflow.CalculationWorkflow
 import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.UnitDoubleKey
 import app.aaps.core.keys.interfaces.Preferences
+import app.aaps.core.objects.aps.IsfForCarbs
 import app.aaps.core.objects.extensions.combine
+import app.aaps.core.objects.workflow.WorkOutcome
 import app.aaps.workflow.iob.fromCarbs
+import dev.zacsweers.metro.Inject
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.datetime.toLocalDateTime
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToLong
+import kotlin.time.Instant
 
 /**
  * Merged worker covering: BG load+smooth, bucketed data prep, BG readings prep,
  * IOB/COB autosens (oref1 or oref), and the IOB/autosens graph data pass.
  *
  * [bgDataReload] controls the optional initial DB load+smooth pass.
- * [emitFinalProgress] is set when this worker is the last in the chain (HISTORY);
- * otherwise [PostCalculationWorker] emits the final signal.
+ * [emitFinalProgress] is set when this phase is the last in the chain (HISTORY);
+ * otherwise [PostCalculationRunner] emits the final signal.
  */
 @Inject
 class PrepareGraphDataRunner(
@@ -86,21 +80,19 @@ class PrepareGraphDataRunner(
     private val profileFunction: ProfileFunction,
     private val profileUtil: ProfileUtil,
     private val preferences: Preferences,
-    private val config: Config,
     private val profiler: Profiler,
     private val decimalFormatter: DecimalFormatter,
-    private val processedDeviceStatusData: ProcessedDeviceStatusData,
     private val scope: CoroutineScope,
     private val autosensDataProvider: () -> AutosensData
-) {
+) : CalculationPhase {
 
     /**
      * Runs one prepare phase.
      *
-     * [isStopped] is asked between phases so a replaced chain gives up promptly. On Android that is
-     * the worker's own flag; the maths does not need to know what stopped it.
+     * [isStopped] is asked between phases so a replaced chain gives up promptly. It is the executor's
+     * flag for this run; the maths does not need to know what stopped it.
      */
-    suspend fun run(job: String?, generation: Long, isStopped: () -> Boolean): WorkOutcome {
+    override suspend fun run(job: String, generation: Long, isStopped: () -> Boolean): WorkOutcome {
         val data = workflowChainData.prepareFor(job, generation)
             ?: return WorkOutcome.StaleInput
 
@@ -117,6 +109,9 @@ class PrepareGraphDataRunner(
             data.iobCobCalculator.bgDataReloaded()
         }
         if (isStopped()) return WorkOutcome.Stopped
+
+        // Before anything is picked with the window: the post pass moves it on only at the end of the run (#5614).
+        if (data.liveWindow) data.overviewData.moveLiveWindowTo(Instant.fromEpochMilliseconds(dateUtil.now()), SystemTimeZone.current())
 
         // ===== Phase 2: Bucketed data → cache (was PrepareBucketedDataWorker) =====
         prepareBucketedData(data)
@@ -207,10 +202,12 @@ class PrepareGraphDataRunner(
             aapsLogger.debug("No bucketed data.")
             return
         }
-        // Refresh the 24h window so history navigation doesn't inherit a stale range.
+        // Refresh the 24h window so history navigation doesn't inherit a stale range. The horizon is
+        // kept rather than rewritten, see keptEndTime.
         val newToTime = data.overviewData.toTime
         val newFromTime = newToTime - T.hours(Constants.GRAPH_TIME_RANGE_HOURS.toLong()).msecs()
-        data.cache.updateTimeRange(TimeRange(fromTime = newFromTime, toTime = newToTime, endTime = newToTime))
+        val newEndTime = keptEndTime(data.cache.timeRangeFlow.value?.endTime, newToTime)
+        data.cache.updateTimeRange(TimeRange(fromTime = newFromTime, toTime = newToTime, endTime = newEndTime))
 
         val highMark = preferences.get(UnitDoubleKey.OverviewHighMark)
         val lowMark = preferences.get(UnitDoubleKey.OverviewLowMark)
@@ -257,11 +254,14 @@ class PrepareGraphDataRunner(
                         valueInUnits < lowMarkInUnits  -> BgRange.LOW
                         else                           -> BgRange.IN_RANGE
                     },
-                    type = BgType.REGULAR
+                    type = BgType.REGULAR,
+                    utcOffset = bg.utcOffset
                 )
             }
 
-        data.cache.updateTimeRange(TimeRange(fromTime = fromTime, toTime = toTime, endTime = toTime))
+        // Keeps the horizon the post phase put there, see keptEndTime.
+        val endTime = keptEndTime(data.cache.timeRangeFlow.value?.endTime, toTime)
+        data.cache.updateTimeRange(TimeRange(fromTime = fromTime, toTime = toTime, endTime = endTime))
         data.cache.updateBgReadings(bgDataPoints)
     }
 
@@ -306,6 +306,8 @@ class PrepareGraphDataRunner(
                 ads.roundUpTime(bucketedData[0].timestamp),
                 true
             )
+            // Loaded when the first bucket needs it, see isfForCarbsFrom
+            var isfForCarbs: IsfForCarbs? = null
             // start from oldest to be able sub cob
             for (i in bucketedData.size - 4 downTo 0) {
                 data.signals.emitProgress(CalculationWorkflow.ProgressData.IOB_COB_OREF, 100 - (100.0 * i / bucketedData.size).toInt())
@@ -342,7 +344,8 @@ class PrepareGraphDataRunner(
                 autosensData.bg = bg
                 delta = bg - bucketedData[i + 1].recalculated
                 avgDelta = (bg - bucketedData[i + 3].recalculated) / 3
-                val sens = profile.getIsfMgdlForCarbs(bgTime, "iobCobOref1Worker", config, processedDeviceStatusData)
+                val carbsIsf = isfForCarbs ?: isfForCarbsFrom(bucketedData[i].timestamp).also { isfForCarbs = it }
+                val sens = bucketIsfForCarbs(carbsIsf, profile, bgTime, bucketedData[i].timestamp, i)
                 val iob = data.iobCobCalculator.calculateFromTreatmentsAndTemps(bgTime, profile)
                 val bgi = -iob.activity * sens * 5
                 val deviation = delta - bgi
@@ -386,7 +389,7 @@ class PrepareGraphDataRunner(
                     autosensData.carbsFromBolus += recentCarbTreatment.amount
                     val isAAPSOrWeighted = activePlugin.activeSensitivity.isMinCarbsAbsorptionDynamic
                     if (recentCarbTreatment.amount > 0) {
-                        val sensForCarbs = profile.getIsfMgdlForCarbs(recentCarbTreatment.timestamp, "fromCarbs", config, processedDeviceStatusData)
+                        val sensForCarbs = carbsIsf.isfMgdl(profile, recentCarbTreatment.timestamp)
                         val ic = profile.getIc(recentCarbTreatment.timestamp)
                         autosensData.activeCarbsList.add(fromCarbs(recentCarbTreatment, isOref1 = true, isAAPSOrWeighted, sensForCarbs, ic, aapsLogger, dateUtil, preferences))
                     }
@@ -477,7 +480,7 @@ class PrepareGraphDataRunner(
 
                 // add one neutral deviation every 2 hours to help decay over long exclusion periods
                 // Local wall clock, exactly what GregorianCalendar read before.
-                val local = Instant.fromEpochMilliseconds(bgTime).toLocalDateTime(TimeZone.currentSystemDefault())
+                val local = Instant.fromEpochMilliseconds(bgTime).toLocalDateTime(SystemTimeZone.current())
                 val minute = local.minute
                 val hours = local.hour
                 if (minute in 0..4 && hours % 2 == 0) autosensData.extraDeviation.add(0.0)
@@ -533,6 +536,8 @@ class PrepareGraphDataRunner(
                 ads.roundUpTime(bucketedData[0].timestamp),
                 true
             )
+            // Loaded when the first bucket needs it, see isfForCarbsFrom
+            var isfForCarbs: IsfForCarbs? = null
             // start from oldest to be able to sub cob
             for (i in bucketedData.size - 4 downTo 0) {
                 data.signals.emitProgress(CalculationWorkflow.ProgressData.IOB_COB_OREF, 100 - (100.0 * i / bucketedData.size).toInt())
@@ -569,7 +574,8 @@ class PrepareGraphDataRunner(
                 autosensData.bg = bg
                 delta = bg - bucketedData[i + 1].recalculated
                 avgDelta = (bg - bucketedData[i + 3].recalculated) / 3
-                val sens = profile.getIsfMgdlForCarbs(bgTime, "IobCobOrefWorker", config, processedDeviceStatusData)
+                val carbsIsf = isfForCarbs ?: isfForCarbsFrom(bucketedData[i].timestamp).also { isfForCarbs = it }
+                val sens = bucketIsfForCarbs(carbsIsf, profile, bgTime, bucketedData[i].timestamp, i)
                 val iob = data.iobCobCalculator.calculateFromTreatmentsAndTemps(bgTime, profile)
                 val bgi = -iob.activity * sens * 5
                 val deviation = delta - bgi
@@ -611,7 +617,7 @@ class PrepareGraphDataRunner(
                     autosensData.carbsFromBolus += recentCarbTreatment.amount
                     val isAAPSOrWeighted = activePlugin.activeSensitivity.isMinCarbsAbsorptionDynamic
                     if (recentCarbTreatment.amount > 0) {
-                        val sensForCarbs = profile.getIsfMgdlForCarbs(recentCarbTreatment.timestamp, "fromCarbs", config, processedDeviceStatusData)
+                        val sensForCarbs = carbsIsf.isfMgdl(profile, recentCarbTreatment.timestamp)
                         val ic = profile.getIc(recentCarbTreatment.timestamp)
                         autosensData.activeCarbsList.add(fromCarbs(recentCarbTreatment, isOref1 = false, isAAPSOrWeighted, sensForCarbs, ic, aapsLogger, dateUtil, preferences))
                     }
@@ -690,12 +696,13 @@ class PrepareGraphDataRunner(
      * Puts the locally computed store back into the live calculator, but only while this run still
      * owns the chain.
      *
-     * The run works on a clone taken at the start of the phase. `stopCalculation()` returns as soon as
-     * WorkManager marks the work as no longer RUNNING, which happens before the running coroutine sees
-     * its own stop flag - the next check sits at the top of the bucket loop, up to one bucket away.
-     * The caller then invalidates the live store and starts a new chain while this run is still alive.
-     * Without the check below this run would write its clone, taken before that invalidation, over the
-     * state the new chain has already prepared: a lost update (issue #5066).
+     * The run works on a clone taken at the start of the phase, and it can outlive the moment it was
+     * replaced. Stopping is cooperative: the run sees its stop flag at its next check, at the top of
+     * the bucket loop, up to one bucket away. `stopCalculation()` waits for that only a few seconds,
+     * and a start that replaces the run does not wait at all. The caller then invalidates the live
+     * store and starts a new chain while this run may still be alive. Without the check below this
+     * run would write its clone, taken before that invalidation, over the state the new chain has
+     * already prepared: a lost update (issue #5066).
      *
      * The check makes the window small but cannot close it completely, because the caller invalidates
      * the store before it registers the new generation.
@@ -714,18 +721,43 @@ class PrepareGraphDataRunner(
         }
     }
 
+    /**
+     * The stored loop results the buckets from [oldestReading] on need. Loaded when the first bucket is
+     * calculated: the buckets go from the oldest, and most runs calculate only the newest one or two, so
+     * this reads about one day of results and not the whole span of the cache. The 5 minutes before cover
+     * the carbs of that first bucket.
+     */
+    private suspend fun isfForCarbsFrom(oldestReading: Long): IsfForCarbs =
+        IsfForCarbs.load(persistenceLayer, oldestReading - T.mins(5).msecs(), dateUtil.now())
+
+    /**
+     * The ISF for carbs of one bucket, the same on a master and on its clients (issue #5404).
+     *
+     * The loop results count up to the bucket's own reading, [readingTime], not up to [bgTime], which is
+     * rounded up to the next minute. The loop run that this reading starts ends inside that minute. It would
+     * count or not depending on whether it had finished when the bucket was calculated, and a master
+     * calculates the bucket before its loop runs. The profile ISF, when it applies, is read at [bgTime], as
+     * it always was.
+     */
+    private fun bucketIsfForCarbs(isfForCarbs: IsfForCarbs, profile: EffectiveProfile, bgTime: Long, readingTime: Long, index: Int): Double =
+        isfForCarbs.isfMgdl(profile, bgTime, resultsUntil = readingTime).also {
+            // The newest bucket only, once per run: enough to compare a master and its client
+            if (index == 0) aapsLogger.debug(LTag.AUTOSENS) { "ISF for carbs at ${dateUtil.dateAndTimeAndSecondsString(readingTime)}: $it" }
+        }
+
     // ---------- Phase 5: IOB/autosens graph data (was PrepareIobAutosensGraphDataWorker) ----------
 
     private suspend fun prepareIobAutosensGraphData(data: PrepareGraphData, isStopped: () -> Boolean) {
         val cacheTimeRange = data.cache.timeRangeFlow.value
         val fromTime = cacheTimeRange?.fromTime ?: data.overviewData.fromTime
+        // The cached end already holds the horizon: the two passes before this one keep it instead of
+        // rewriting it, see keptEndTime. Nothing to widen here.
         val endTime = cacheTimeRange?.endTime ?: data.overviewData.endTime
 
         data.signals.emitProgress(CalculationWorkflow.ProgressData.PREPARE_IOB_AUTOSENS_DATA, 0)
 
         val now = dateUtil.now().toDouble()
         var time = fromTime
-        var maxActivity = 0.0
 
         val iobListCompose: MutableList<GraphDataPoint> = ArrayList()
         val absIobListCompose: MutableList<GraphDataPoint> = ArrayList()
@@ -787,8 +819,6 @@ class PrepareGraphDataRunner(
 
             if (time <= now) activityListCompose.add(GraphDataPoint(time, iob.activity))
             else activityPredictionListCompose.add(GraphDataPoint(time, iob.activity))
-            if (iob.activity > maxActivity) maxActivity = iob.activity
-            else if (-iob.activity > maxActivity) maxActivity = -iob.activity
 
             time += 5 * 60 * 1000L
         }
@@ -803,14 +833,9 @@ class PrepareGraphDataRunner(
         }
         aapsLogger.debug(LTag.AUTOSENS, "IOB prediction for AS=" + decimalFormatter.to2Decimal(lastAutosensResult.ratio) + ": " + data.iobCobCalculator.iobArrayToString(iobPredictionArray))
 
-        val varSensListCompose: MutableList<GraphDataPoint> = ArrayList()
-        val apsResults = persistenceLayer.getApsResults(fromTime, endTime)
-        apsResults.forEach {
-            it.variableSens?.let { variableSens ->
-                val varSens = profileUtil.fromMgdlToUnits(variableSens)
-                varSensListCompose.add(GraphDataPoint(it.date, varSens))
-            }
-        }
+        // Only time and value: reading whole APS results decoded all their JSON on every run (#5248)
+        val varSensListCompose = persistenceLayer.getVariableSensitivities(fromTime, endTime)
+            .map { GraphDataPoint(it.timestamp, profileUtil.fromMgdlToUnits(it.valueMgdl)) }
 
         data.cache.updateIobGraph(IobGraphData(iob = iobListCompose, predictions = iobPredictionsListCompose))
         data.cache.updateAbsIobGraph(AbsIobGraphData(absIob = absIobListCompose))
@@ -818,8 +843,7 @@ class PrepareGraphDataRunner(
         data.cache.updateActivityGraph(
             ActivityGraphData(
                 activity = activityListCompose,
-                activityPrediction = activityPredictionListCompose,
-                maxActivity = maxActivity
+                activityPrediction = activityPredictionListCompose
             )
         )
         data.cache.updateBgiGraph(BgiGraphData(bgi = bgiListCompose, bgiPrediction = bgiPredictionListCompose))

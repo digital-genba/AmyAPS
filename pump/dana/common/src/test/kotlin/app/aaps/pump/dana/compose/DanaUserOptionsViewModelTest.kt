@@ -17,7 +17,11 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.Mock
 import org.mockito.MockitoAnnotations
+import org.mockito.kotlin.any
+import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
+import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -53,6 +57,45 @@ internal class DanaUserOptionsViewModelTest {
         assertThat(state.beepOnPress).isFalse()
         assertThat(state.timeFormat24h).isFalse()
         assertThat(state.glucoseUnitMmol).isFalse()
+    }
+
+    @Test
+    fun `auto lock is shown only for Dana-i2`() {
+        assertThat(sut.uiState.value.showAutoLock).isFalse()
+
+        whenever(danaPump.isDanaI2).thenReturn(true)
+        whenever(danaPump.autoLock).thenReturn(true)
+        sut.loadFromPump()
+
+        assertThat(sut.uiState.value.showAutoLock).isTrue()
+        assertThat(sut.uiState.value.autoLock).isTrue()
+    }
+
+    @Test
+    fun `save writes auto lock to the options to write`() {
+        sut.updateAutoLock(true)
+
+        sut.save()
+
+        val written = argumentCaptor<DanaPump.UserOptions>()
+        verify(danaPump).userOptionsToWrite = written.capture()
+        assertThat(written.firstValue.autoLock).isTrue()
+    }
+
+    /**
+     * A save puts the new options apart from the values a settings read fills. It put them into those: a read queued
+     * before the write put the pump's old values back, and the old values were written and shown as saved.
+     */
+    @Test
+    fun `save keeps the new options apart from the values a settings read fills`() {
+        sut.updateAutoLock(true)
+
+        sut.save()
+
+        verify(danaPump, never()).autoLock = any()
+        verify(danaPump, never()).beepAndAlarm = any()
+        verify(danaPump, never()).lcdOnTimeSec = any()
+        verify(danaPump, never()).lowReservoirRate = any()
     }
 
     @Test

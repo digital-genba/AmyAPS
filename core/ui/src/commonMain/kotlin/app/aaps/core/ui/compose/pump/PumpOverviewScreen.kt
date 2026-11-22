@@ -3,32 +3,30 @@ package app.aaps.core.ui.compose.pump
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import app.aaps.core.ui.compose.AapsCard
+import app.aaps.core.ui.compose.ActionButtons
 import app.aaps.core.ui.compose.StatusLevel
 import app.aaps.core.ui.compose.statusLevelToColor
 import app.aaps.core.ui.compose.statusLevelToDescription
@@ -105,11 +103,18 @@ private fun CommunicationStatusCard(banner: StatusBanner?, queueStatus: Annotate
     ) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
             banner?.let {
+                // Critical / warning was only the card colour, and a change (Connecting → Connected)
+                // was silent. The level is said after the text, and the text is a live region.
+                val severity = stringResourceOrNull(statusLevelToDescription(it.level))
                 Text(
                     text = it.text,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
-                    color = fgColor
+                    color = fgColor,
+                    modifier = Modifier.semantics {
+                        liveRegion = LiveRegionMode.Polite
+                        severity?.let { level -> stateDescription = level }
+                    }
                 )
             }
             queueStatus?.let {
@@ -207,43 +212,5 @@ private fun InfoRowItem(row: PumpInfoRow) {
             textAlign = TextAlign.End,
             modifier = Modifier.weight(1.2f)
         )
-    }
-}
-
-// ── Action buttons ─────────────────────────────────────────────────────────
-
-@Composable
-private fun ActionButtons(actions: List<PumpAction>) {
-    val visible = actions.filter { it.visible }
-    if (visible.isEmpty()) return
-
-    visible.chunked(2).forEach { row ->
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            row.forEach { action ->
-                FilledTonalButton(
-                    onClick = action.onClick,
-                    enabled = action.enabled,
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                ) {
-                    action.icon?.let {
-                        Icon(
-                            imageVector = it,
-                            contentDescription = action.label,
-                            modifier = Modifier.size(18.dp),
-                            tint = Color.Unspecified
-                        )
-                    }
-                    Spacer(modifier = Modifier.size(4.dp))
-                    Text(text = action.label, maxLines = 1)
-                }
-            }
-            if (row.size == 1) {
-                Spacer(modifier = Modifier.weight(1f))
-            }
-        }
     }
 }

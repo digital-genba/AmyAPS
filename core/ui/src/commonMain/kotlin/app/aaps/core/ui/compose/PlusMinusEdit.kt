@@ -23,12 +23,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import app.aaps.core.data.format.NumberFormat
+import app.aaps.core.data.format.NumberFormatPlatform
 import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.ui.CoreUiStrings
 import kotlin.math.roundToInt
@@ -48,6 +51,9 @@ import kotlin.math.roundToInt
  * @param valueFormat Format for the displayed text
  * @param unitLabel Unit label, shown as the field's trailing icon
  * @param enabled Whether the stepper is interactive
+ * @param label Spoken name of the value, e.g. "Basal 08:00". Not drawn: the stepper sits in a row
+ *   that shows its context next to it, but a screen reader reads the field on its own and heard
+ *   only "0.85, edit box" and "decrement" - on every one of 24 basal rows.
  * @param modifier Modifier for the row container
  */
 @Composable
@@ -59,6 +65,7 @@ fun PlusMinusEdit(
     valueFormat: NumberFormat = NumberFormat.DECIMAL_1,
     unitLabel: TextRef? = null,
     enabled: Boolean = true,
+    label: String? = null,
     modifier: Modifier = Modifier
 ) {
     val focusManager = LocalFocusManager.current
@@ -81,6 +88,18 @@ fun PlusMinusEdit(
 
     val resolvedUnitLabel = unitLabel?.let { stringResource(it) } ?: ""
 
+    // Same wording as NumberInputRow: "decrement Basal 08:00 by 0.01 U/h".
+    val stepNumber = valueFormat.format(step)
+    val stepText =
+        if (resolvedUnitLabel.isNotEmpty()) stringResource(CoreUiStrings.value_with_unit, stepNumber, resolvedUnitLabel)
+        else stepNumber
+    val decreaseDescription =
+        if (label != null) stringResource(CoreUiStrings.a11y_min_button_description, label, stepText)
+        else stringResource(CoreUiStrings.decrement)
+    val increaseDescription =
+        if (label != null) stringResource(CoreUiStrings.a11y_plus_button_description, label, stepText)
+        else stringResource(CoreUiStrings.increment)
+
     fun validateAndCommit(text: String) {
         val cleaned = text.trim().replace(",", ".")
         val parsed = cleaned.toDoubleOrNull()
@@ -102,7 +121,7 @@ fun PlusMinusEdit(
     }
 
     fun stepValue(direction: Int) {
-        val newValue = roundToStep(value + direction * step, step).coerceIn(minValue, maxValue)
+        val newValue = stepFromShown(value, direction, step, valueFormat, valueRange)
         textFieldValue = TextFieldValue(valueFormat.format(newValue))
         isError = false
         onValueChange(newValue)
@@ -120,7 +139,7 @@ fun PlusMinusEdit(
         ) {
             Icon(
                 imageVector = Icons.Default.Remove,
-                contentDescription = stringResource(CoreUiStrings.decrement),
+                contentDescription = decreaseDescription,
                 modifier = Modifier.size(16.dp)
             )
         }
@@ -150,6 +169,7 @@ fun PlusMinusEdit(
             ),
             modifier = Modifier
                 .weight(1f)
+                .then(if (label != null) Modifier.semantics { contentDescription = label } else Modifier)
                 .onFocusChanged { focusState ->
                     if (isFocused && !focusState.isFocused) {
                         validateAndCommit(textFieldValue.text)
@@ -170,9 +190,21 @@ fun PlusMinusEdit(
         ) {
             Icon(
                 imageVector = Icons.Default.Add,
-                contentDescription = stringResource(CoreUiStrings.increment),
+                contentDescription = increaseDescription,
                 modifier = Modifier.size(16.dp)
             )
         }
     }
+}
+
+/**
+ * The value one [step] up ([direction] 1) or down (-1) from [value] as [valueFormat] shows it.
+ *
+ * Not from the stored value: one with more digits than the field shows moved the shown digit by two, or
+ * did not move it at all. Autotune writes basal rates with three decimals, and 1.125 is shown as 1.12
+ * but stepped from 1.13 (#5401).
+ */
+internal fun stepFromShown(value: Double, direction: Int, step: Double, valueFormat: NumberFormat, valueRange: ClosedFloatingPointRange<Double>): Double {
+    val shown = valueFormat.format(value, NumberFormatPlatform.SEPARATOR_DOT).toDoubleOrNull() ?: value
+    return roundToStep(shown + direction * step, step).coerceIn(valueRange.start, valueRange.endInclusive)
 }

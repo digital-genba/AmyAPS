@@ -5,8 +5,8 @@ import androidx.lifecycle.ViewModel
 import app.aaps.core.objects.di.CoreObjectsGraph
 import app.aaps.shared.tests.metroScopedProviderTypes
 import com.google.common.truth.Truth.assertThat
-import org.junit.jupiter.api.Test
 import dev.zacsweers.metro.SingleIn
+import org.junit.jupiter.api.Test
 import kotlin.reflect.KClass
 import kotlin.reflect.full.primaryConstructor
 
@@ -36,7 +36,7 @@ class ViewModelOwnershipTest {
             val parameters = vm.primaryConstructor?.parameters ?: continue
             for (parameter in parameters) {
                 val type = (parameter.type.classifier as? KClass<*>)?.java ?: continue
-                // Only concrete classes carrying a javax scope can be built twice. An interface has to be
+                // Only concrete classes carrying a scope annotation can be built twice. An interface has to be
                 // bound somewhere explicit, so it cannot be duplicated by accident.
                 // A graph INPUT, not a binding: the Application hands it to `AppRootGraph.Factory`, so
                 // there is exactly one and no annotation says so. It is the only one of these.

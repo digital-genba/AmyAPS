@@ -14,6 +14,8 @@ import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.pump.dana.DanaPump
+import app.aaps.pump.dana.R
+import app.aaps.pump.dana.keys.DanaStringComposedKey
 import app.aaps.pump.danars.DanaRSPlugin
 import app.aaps.pump.danars.comm.DanaRSMessageHashTable
 import app.aaps.pump.danars.comm.DanaRSPacket
@@ -24,10 +26,14 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.ArgumentMatchers.anyInt
 import org.mockito.Mock
+import org.mockito.Mockito.never
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
 import org.mockito.kotlin.any
+import org.mockito.kotlin.anyOrNull
+import org.mockito.kotlin.anyVararg
+import org.mockito.kotlin.eq
 import org.mockito.kotlin.whenever
 import java.util.concurrent.atomic.AtomicReference
 
@@ -52,7 +58,11 @@ class BLECommTest : TestBase() {
 
     private lateinit var bleComm: BLEComm
 
-    private companion object { private const val ADDRESS = "00:11:22:33:44:55" }
+    private companion object {
+
+        private const val ADDRESS = "00:11:22:33:44:55"
+        private const val START = 1_000_000L
+    }
 
     @BeforeEach
     fun setup() {
@@ -69,12 +79,12 @@ class BLECommTest : TestBase() {
             danaPump,
             danaRSPlugin,
             bleEncryption,
-            pumpSync,
             dateUtil,
             preferences,
             configBuilder,
             notificationManager,
-            bleTransport
+            bleTransport,
+            DanaRSAlarmReporter(rh, notificationManager, pumpSync, danaPump)
         )
 
         `when`(rh.gs(anyInt())).thenReturn("test")
@@ -250,5 +260,251 @@ class BLECommTest : TestBase() {
         threads.forEach { it.join() }
 
         assertThat(failure.get()).isNull()
+    }
+
+    /**
+     * The length byte must be read unsigned. A Dana-i2 bulk history packet is up to 202 bytes,
+     * read as a signed byte that length was negative and the packet could not be parsed.
+     */
+    @Test
+    fun packetLongerThan127BytesIsParsed() {
+        whenever(bleEncryption.getDecryptedPacket(any())).thenReturn(null)
+        val length = 202
+        val longPacket = ByteArray(length + 7).apply {
+            this[0] = 0xA5.toByte()
+            this[1] = 0xA5.toByte()
+            this[2] = length.toByte()
+            this[length + 5] = 0x5A.toByte()
+            this[length + 6] = 0x5A.toByte()
+        }
+
+        // BLE delivers it in parts of 20 bytes
+        longPacket.toList().chunked(20).forEach { bleComm.onCharacteristicChanged(it.toByteArray()) }
+
+        verify(bleEncryption, times(1)).getDecryptedPacket(any())
+    }
+
+    /**
+     * A pump with easy mode (Dana-i2 0x0C) gets the easy menu check (0xF4) after the pump check.
+     * Its reply sets the easy mode and basal unit, then the handshake continues with the BLE5 time info.
+     */
+    @Test
+    fun easyModePumpIsCheckedBeforeTheBle5TimeInfo() {
+        whenever(danaPump.hwModel).thenReturn(0x0C)
+        whenever(preferences.get(eq(DanaStringComposedKey.Ble5PairingKey), anyVararg<Any>())).thenReturn("982316")
+        whenever(bleEncryption.getEncryptedPacket(anyInt(), anyOrNull(), anyOrNull())).thenReturn(byteArrayOf(0))
+        val ok = "OK".encodeToByteArray()
+        // Real reply of the Korean Dana-i2: OK M 0C P 30 + pairing key
+        val pumpCheckReply = byteArrayOf(0x02, 0x00) + ok + byteArrayOf('M'.code.toByte(), 0x0C, 'P'.code.toByte(), 0x30) + "982316".encodeToByteArray()
+        val easyMenuReply = byteArrayOf(0x02, BleEncryption.DANAR_PACKET__OPCODE_ENCRYPTION__GET_EASY_MENU_CHECK.toByte(), 0x01, 0x00)
+        whenever(bleEncryption.getDecryptedPacket(any())).thenReturn(pumpCheckReply, easyMenuReply)
+
+        bleComm.onCharacteristicChanged(framedPacket())
+        verify(bleEncryption).getEncryptedPacket(BleEncryption.DANAR_PACKET__OPCODE_ENCRYPTION__GET_EASY_MENU_CHECK, null, null)
+        verify(bleEncryption, never()).getEncryptedPacket(eq(BleEncryption.DANAR_PACKET__OPCODE_ENCRYPTION__TIME_INFORMATION), anyOrNull(), anyOrNull())
+
+        bleComm.onCharacteristicChanged(framedPacket())
+        verify(danaPump).isEasyModeEnabled = true
+        verify(danaPump, times(2)).isConfigUD = false // reset on the pump check, then the reply (U/h)
+        verify(bleEncryption).getEncryptedPacket(eq(BleEncryption.DANAR_PACKET__OPCODE_ENCRYPTION__TIME_INFORMATION), anyOrNull(), anyOrNull())
+    }
+
+    /** Decrypted "PUMP" reply to the pump check, optionally with the Dana-i2 error byte */
+    private fun pumpReply(vararg errorByte: Int): ByteArray =
+        byteArrayOf(BleEncryption.DANAR_PACKET__TYPE_ENCRYPTION_RESPONSE.toByte(), BleEncryption.DANAR_PACKET__OPCODE_ENCRYPTION__PUMP_CHECK.toByte()) +
+            "PUMP".encodeToByteArray() + errorByte.map { it.toByte() }.toByteArray()
+
+    /**
+     * Dana-i2 adds 1 error byte to the "PUMP" reply. This 7 byte reply used to miss the "PUMP" check
+     * and fall into the wrong serial branch, which cleared the pairing and hid the real pump error.
+     */
+    @Test
+    fun danaI2PumpErrorShowsTheErrorAndKeepsThePairing() {
+        whenever(rh.gs(R.string.occlusion)).thenReturn("Occlusion")
+        whenever(bleEncryption.getDecryptedPacket(any())).thenReturn(pumpReply(0x02))
+
+        bleComm.onCharacteristicChanged(framedPacket())
+
+        verify(bleTransport).updatePairingState(PairingState(step = PairingStep.ERROR, errorMessage = "Occlusion"))
+        verify(danaRSPlugin, never()).clearPairing()
+    }
+
+    @Test
+    fun olderPumpErrorWithoutErrorByteStillShowsPumpError() {
+        whenever(rh.gs(R.string.pumperror)).thenReturn("Pump Error")
+        whenever(bleEncryption.getDecryptedPacket(any())).thenReturn(pumpReply())
+
+        bleComm.onCharacteristicChanged(framedPacket())
+
+        verify(bleTransport).updatePairingState(PairingState(step = PairingStep.ERROR, errorMessage = "Pump Error"))
+        verify(danaRSPlugin, never()).clearPairing()
+    }
+
+    /** The empty answer `02 00` to the pump check, as a real Dana-i2 gives it after an unfinished handshake (#5571). */
+    private val unknownAnswer = byteArrayOf(BleEncryption.DANAR_PACKET__TYPE_ENCRYPTION_RESPONSE.toByte(), BleEncryption.DANAR_PACKET__OPCODE_ENCRYPTION__PUMP_CHECK.toByte())
+
+    /** A v1 OK answer to the pump check */
+    private val okAnswer = unknownAnswer + "OK".encodeToByteArray()
+
+    /** The pump sends [answer] at [time]. Then the link drops, as after a real connection, unless [linkStays]. */
+    private fun pumpAnswersAt(time: Long, answer: ByteArray, linkStays: Boolean = false) {
+        whenever(dateUtil.now()).thenReturn(time)
+        whenever(bleEncryption.getDecryptedPacket(any())).thenReturn(answer)
+        bleComm.onCharacteristicChanged(framedPacket())
+        if (!linkStays) bleComm.onConnectionStateChanged(false)
+    }
+
+    @Test
+    fun unknownPumpCheckAnswerClosesTheLinkAndKeepsThePairing() {
+        pumpAnswersAt(START, unknownAnswer)
+
+        verify(bleGatt).disconnect()
+        verify(danaRSPlugin, never()).clearPairing()
+        verify(bleTransport).updatePairingState(PairingState(step = PairingStep.ERROR, errorMessage = "test"))
+    }
+
+    @Test
+    fun theQueueWaitsDuringThePauseAfterAnUnknownAnswer() {
+        pumpAnswersAt(START, unknownAnswer)
+        // The link is down, the pause keeps the queue from connecting
+        bleComm.onConnectionStateChanged(false)
+
+        whenever(dateUtil.now()).thenReturn(START + BLEComm.UNKNOWN_ANSWER_PAUSE_MS - 1)
+        assertThat(bleComm.isConnecting).isTrue()
+        whenever(dateUtil.now()).thenReturn(START + BLEComm.UNKNOWN_ANSWER_PAUSE_MS)
+        assertThat(bleComm.isConnecting).isFalse()
+    }
+
+    @Test
+    fun noMessageIsSentDuringThePause() {
+        pumpAnswersAt(START, unknownAnswer)
+        bleComm.onConnectionStateChanged(false)
+        whenever(danaRSPacket.friendlyName).thenReturn("TestPacket")
+
+        bleComm.sendMessage(danaRSPacket)
+
+        verify(bleEncryption, never()).getEncryptedPacket(anyInt(), anyOrNull(), anyOrNull())
+    }
+
+    @Test
+    fun aConnectionAskedForEndsThePause() {
+        `when`(bleAdapter.getDeviceName(ADDRESS)).thenReturn("Dana")
+        `when`(bleAdapter.isDeviceBonded(ADDRESS)).thenReturn(true)
+        `when`(bleGatt.connect(ADDRESS)).thenReturn(true)
+        pumpAnswersAt(START, unknownAnswer)
+
+        // The pair wizard connects at once, and when that link drops the queue may connect again
+        bleComm.connect("test", ADDRESS)
+        bleComm.onConnectionStateChanged(false)
+
+        assertThat(bleComm.isConnecting).isFalse()
+    }
+
+    @Test
+    fun threeUnknownAnswersInLessThan5MinutesKeepThePairing() {
+        pumpAnswersAt(START, unknownAnswer)
+        pumpAnswersAt(START + 2 * 60_000L, unknownAnswer)
+        pumpAnswersAt(START + 4 * 60_000L, unknownAnswer)
+
+        verify(danaRSPlugin, never()).clearPairing()
+    }
+
+    @Test
+    fun twoUnknownAnswersOver5MinutesKeepThePairing() {
+        pumpAnswersAt(START, unknownAnswer)
+        pumpAnswersAt(START + BLEComm.UNKNOWN_ANSWER_CLEAR_AFTER_MS + 60_000L, unknownAnswer)
+
+        verify(danaRSPlugin, never()).clearPairing()
+    }
+
+    @Test
+    fun unknownAnswersThatGoOnClearThePairing() {
+        pumpAnswersAt(START, unknownAnswer)
+        pumpAnswersAt(START + 2 * 60_000L, unknownAnswer)
+        pumpAnswersAt(START + 4 * 60_000L, unknownAnswer)
+        pumpAnswersAt(START + BLEComm.UNKNOWN_ANSWER_CLEAR_AFTER_MS, unknownAnswer)
+
+        verify(danaRSPlugin, times(1)).clearPairing()
+    }
+
+    @Test
+    fun anOkAnswerStartsTheCountAgain() {
+        whenever(preferences.get(eq(DanaStringComposedKey.ParingKey), anyVararg<Any>())).thenReturn("")
+        whenever(bleEncryption.getEncryptedPacket(anyInt(), anyOrNull(), anyOrNull())).thenReturn(byteArrayOf(0))
+        pumpAnswersAt(START, unknownAnswer)
+        pumpAnswersAt(START + 2 * 60_000L, unknownAnswer)
+        pumpAnswersAt(START + 3 * 60_000L, okAnswer)
+        pumpAnswersAt(START + 4 * 60_000L, unknownAnswer)
+        pumpAnswersAt(START + BLEComm.UNKNOWN_ANSWER_CLEAR_AFTER_MS + 60_000L, unknownAnswer)
+
+        verify(danaRSPlugin, never()).clearPairing()
+    }
+
+    /** A BLE5 OK answer of a Dana-i2 (model 0x0B) carrying [key] */
+    private fun ble5OkAnswer(key: String): ByteArray =
+        okAnswer + byteArrayOf('M'.code.toByte(), 0x0B, 'P'.code.toByte(), 0x30) + key.encodeToByteArray()
+
+    /**
+     * Seen on a real Dana-i2: AAPS connected again 0.6 s after a disconnect, Android kept the radio link, and the pump
+     * got two pump checks on one link. It answered OK to the first, then `02 00` to the second, and then went on
+     * with the handshake. Closing the link on the `02 00` threw away a connection that worked.
+     */
+    @Test
+    fun anUnknownAnswerAfterAnOkOnTheSameConnectionIsIgnored() {
+        whenever(danaPump.hwModel).thenReturn(0x0B)
+        whenever(preferences.get(eq(DanaStringComposedKey.Ble5PairingKey), anyVararg<Any>())).thenReturn("982316")
+        whenever(bleEncryption.getEncryptedPacket(anyInt(), anyOrNull(), anyOrNull())).thenReturn(byteArrayOf(0))
+
+        pumpAnswersAt(START, ble5OkAnswer("982316"), linkStays = true)
+        pumpAnswersAt(START + 57, unknownAnswer, linkStays = true)
+
+        verify(bleGatt, never()).disconnect()
+        verify(danaRSPlugin, never()).clearPairing()
+        verify(bleTransport, never()).updatePairingState(PairingState(step = PairingStep.ERROR, errorMessage = "test"))
+        assertThat(bleComm.isConnecting).isFalse()
+        // The handshake went on once, from the OK
+        verify(bleEncryption, times(1)).getEncryptedPacket(eq(BleEncryption.DANAR_PACKET__OPCODE_ENCRYPTION__TIME_INFORMATION), anyOrNull(), anyOrNull())
+    }
+
+    @Test
+    fun onANewConnectionAnUnknownAnswerClosesTheLinkAgain() {
+        whenever(danaPump.hwModel).thenReturn(0x0B)
+        whenever(preferences.get(eq(DanaStringComposedKey.Ble5PairingKey), anyVararg<Any>())).thenReturn("982316")
+        whenever(bleEncryption.getEncryptedPacket(anyInt(), anyOrNull(), anyOrNull())).thenReturn(byteArrayOf(0))
+
+        pumpAnswersAt(START, ble5OkAnswer("982316"))
+        pumpAnswersAt(START + 60_000L, unknownAnswer)
+
+        verify(bleGatt).disconnect()
+    }
+
+    /** A key that is not 6 digits made BleEncryption.setBle5Key throw inside the Bluetooth callback, and the handshake stopped with no message */
+    @Test
+    fun aStoredBle5KeyThatIsNotDigitsIsNotUsed() {
+        whenever(danaPump.hwModel).thenReturn(0x0B)
+        whenever(preferences.get(eq(DanaStringComposedKey.Ble5PairingKey), anyVararg<Any>())).thenReturn("12345Z")
+        `when`(bleAdapter.getDeviceName(ADDRESS)).thenReturn("Dana")
+        `when`(bleAdapter.isDeviceBonded(ADDRESS)).thenReturn(true)
+        `when`(bleGatt.connect(ADDRESS)).thenReturn(true)
+        bleComm.connect("test", ADDRESS)
+
+        // No key in the answer (byte 8 is 0), so the stored one would be used
+        pumpAnswersAt(START, ble5OkAnswer("\u0000\u0000\u0000\u0000\u0000\u0000"))
+
+        verify(bleEncryption, never()).setBle5Key(any())
+        verify(bleAdapter).removeBond(ADDRESS)
+        verify(bleGatt).disconnect()
+    }
+
+    @Test
+    fun aBle5KeyFromThePumpThatIsNotDigitsIsNotStored() {
+        whenever(danaPump.hwModel).thenReturn(0x0B)
+        whenever(preferences.get(eq(DanaStringComposedKey.Ble5PairingKey), anyVararg<Any>())).thenReturn("982316")
+        whenever(bleEncryption.getEncryptedPacket(anyInt(), anyOrNull(), anyOrNull())).thenReturn(byteArrayOf(0))
+
+        pumpAnswersAt(START, ble5OkAnswer("ZZZZZZ"))
+
+        verify(preferences, never()).put(eq(DanaStringComposedKey.Ble5PairingKey), anyVararg<Any>(), value = eq("ZZZZZZ"))
+        verify(bleEncryption).setBle5Key("982316".encodeToByteArray())
     }
 }

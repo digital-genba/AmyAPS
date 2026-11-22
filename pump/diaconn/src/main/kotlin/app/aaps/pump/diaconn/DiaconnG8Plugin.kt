@@ -10,14 +10,15 @@ import app.aaps.core.data.pump.defs.ManufacturerType
 import app.aaps.core.data.pump.defs.PumpDescription
 import app.aaps.core.data.pump.defs.PumpType
 import app.aaps.core.data.time.T
-import app.aaps.core.interfaces.di.PumpDriver
 import app.aaps.core.interfaces.constraints.PumpPluginConstraints
+import app.aaps.core.interfaces.di.PumpDriver
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.notifications.NotificationManager
-import app.aaps.core.interfaces.plugin.PluginBase
 import app.aaps.core.interfaces.plugin.OwnDatabasePlugin
+import app.aaps.core.interfaces.plugin.PluginBase
 import app.aaps.core.interfaces.plugin.PluginDescription
+import app.aaps.core.interfaces.profile.Profile
 import app.aaps.core.interfaces.pump.BlePreCheck
 import app.aaps.core.interfaces.pump.BolusProgressData
 import app.aaps.core.interfaces.pump.DetailedBolusInfo
@@ -57,6 +58,12 @@ import app.aaps.pump.diaconn.keys.DiaconnIntNonKey
 import app.aaps.pump.diaconn.keys.DiaconnIntentKey
 import app.aaps.pump.diaconn.keys.DiaconnStringNonKey
 import app.aaps.pump.diaconn.service.DiaconnG8Service
+import dev.zacsweers.metro.AppScope
+import dev.zacsweers.metro.ContributesIntoMap
+import dev.zacsweers.metro.Inject
+import dev.zacsweers.metro.IntKey
+import dev.zacsweers.metro.SingleIn
+import dev.zacsweers.metro.binding
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -64,13 +71,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import dev.zacsweers.metro.AppScope
-import dev.zacsweers.metro.ContributesIntoMap
-import dev.zacsweers.metro.IntKey
-import dev.zacsweers.metro.binding
-import dev.zacsweers.metro.Inject
-import dev.zacsweers.metro.SingleIn
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.max
 
 @ContributesIntoMap(AppScope::class, binding = binding<PluginBase>())
@@ -215,9 +217,8 @@ class DiaconnG8Plugin(
 
     override suspend fun getPumpStatus(reason: String) {
         diaconnG8Service?.readPumpStatus()
-        pumpDescription.basalStep = diaconnG8Pump.basalStep
-        pumpDescription.bolusStep = diaconnG8Pump.bolusStep
-        pumpDescription.basalMaximumRate = diaconnG8Pump.maxBasalPerHours
+        // Only once the pump reported it: before that it is 0, and a max basal of 0 makes every profile invalid.
+        if (diaconnG8Pump.maxBasalPerHours > 0) pumpDescription.basalMaximumRate = diaconnG8Pump.maxBasalPerHours
     }
 
     // Diaconn Pump Interface
@@ -290,6 +291,15 @@ class DiaconnG8Plugin(
         return true
     }
 
+    /**
+     * The 24 hourly rates the pump itself reports: it is read again after each set (#2454). If that read failed, they
+     * are still the old ones; then [isThisProfileSet] fails too, and the profile is set again. null before the pump
+     * was read: the profile counts as it was sent.
+     */
+    override fun deliveredBasal(): List<Profile.ProfileValue>? =
+        if (!isInitialized()) null
+        else diaconnG8Pump.pumpProfiles?.get(diaconnG8Pump.activeProfile)?.take(24)?.mapIndexed { hour, rate -> Profile.ProfileValue(T.hours(hour.toLong()).secs().toInt(), rate) }
+
     override val lastDataTime: StateFlow<Long> = diaconnG8Pump.lastConnectionFlow
     override val lastBolusTime: StateFlow<Long?> = diaconnG8Pump.lastBolusTimeFlow
     override val lastBolusAmount: StateFlow<PumpInsulin?> = diaconnG8Pump.lastBolusAmountFlow.mapState { it?.let(::PumpInsulin) }
@@ -313,7 +323,9 @@ class DiaconnG8Plugin(
 
         if (result.success) result.enacted = true
         if (!result.success) {
-            setErrorMsg(diaconnG8Pump.resultErrorCode, result)
+            if (diaconnG8Pump.bolusStoppedByPump)
+                result.comment = rh.gs(app.aaps.core.ui.R.string.pump_stopped_bolus, rh.gs(app.aaps.core.interfaces.R.string.format_insulin_units, diaconnG8Pump.lastBolusAmount))
+            else setErrorMsg(diaconnG8Pump.resultErrorCode, result)
         } else result.comment = rh.gs(app.aaps.core.ui.R.string.ok)
         aapsLogger.debug(LTag.PUMP, "deliverTreatment: OK. Asked: " + detailedBolusInfo.insulin + " Delivered: " + result.bolusDelivered)
         return result
@@ -364,15 +376,13 @@ class DiaconnG8Plugin(
                     }
                 }
             }
-            temporaryBasalStorage.add(PumpSync.PumpState.TemporaryBasal(dateUtil.now(), T.mins(durationInMinutes.toLong()).msecs(), absoluteRate, true, tbrType, 0L, 0L))
-            // Convert duration from minutes to hours
-            aapsLogger.debug(LTag.PUMP, "setTempBasalAbsolute: Setting temp basal $absoluteRate U for $durationInMinutes mins (doLowTemp || doHighTemp)")
-            val connectionOK: Boolean = if (durationInMinutes == 15 || durationInMinutes == 30) {
-                diaconnG8Service?.tempBasalShortDuration(absoluteRate, durationInMinutes) == true
-            } else {
-                val durationInHours = max(durationInMinutes / 60.0, 1.0)
-                diaconnG8Service?.tempBasal(absoluteRate, durationInHours) == true
-            }
+            // The G8 runs a temp basal in whole 30-minute steps (2..96 quarters of an hour in its log). A 15-minute one
+            // was sent as 30 minutes and a 45-minute one as 60, but stored as asked: AAPS counted the base rate while the
+            // pump still gave the temp basal. It is sent and stored as the pump runs it.
+            val pumpMinutes = max(ceil(durationInMinutes / TBR_STEP_MINUTES).toInt(), 1) * TBR_STEP_MINUTES.toInt()
+            temporaryBasalStorage.add(PumpSync.PumpState.TemporaryBasal(dateUtil.now(), T.mins(pumpMinutes.toLong()).msecs(), absoluteRate, true, tbrType, 0L, 0L))
+            aapsLogger.debug(LTag.PUMP, "setTempBasalAbsolute: Setting temp basal $absoluteRate U for $pumpMinutes mins, asked $durationInMinutes (doLowTemp || doHighTemp)")
+            val connectionOK = diaconnG8Service?.tempBasal(absoluteRate, pumpMinutes / 60.0) == true
 
             if (connectionOK && diaconnG8Pump.isTempBasalInProgress && diaconnG8Pump.tempBasalAbsoluteRate == absoluteRate) {
                 result.enacted = true
@@ -533,4 +543,9 @@ class DiaconnG8Plugin(
         icon = pluginDescription.icon
     )
 
+    private companion object {
+
+        /** The temp basal step of the G8, in minutes. */
+        const val TBR_STEP_MINUTES = 30.0
+    }
 }

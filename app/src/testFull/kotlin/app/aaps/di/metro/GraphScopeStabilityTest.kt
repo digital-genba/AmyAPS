@@ -1,5 +1,9 @@
 package app.aaps.di.metro
 
+import app.aaps.di.metro.GraphScopeStabilityTest.Companion.FRESH_EACH_READ
+import app.aaps.di.metro.GraphScopeStabilityTest.Companion.PUMP_UNREADABLE
+import app.aaps.di.metro.GraphScopeStabilityTest.Companion.SINGLE_INSTANCE
+import app.aaps.di.metro.GraphScopeStabilityTest.Companion.UNREADABLE
 import com.google.common.truth.Truth.assertThat
 import org.junit.jupiter.api.Test
 
@@ -10,9 +14,9 @@ import org.junit.jupiter.api.Test
  * which is exactly how `PumpDriverBucketTest` once went red on a follower unnoticed.
  * ## Why identity rather than annotations
  * Reading the annotation would only re-state the source. This reads the **graph**, so it is true
- * regardless of how ownership is spelled - a `@SingleIn` class, a scoped `@Provides` in a binding
- * container, or interop reading a javax scope all look the same from here, which is the point when the
- * whole change is swapping one spelling for another.
+ * regardless of how ownership is spelled - a `@SingleIn` class or a scoped `@Provides` in a binding
+ * container look the same from here, which is the point when the whole change is swapping one
+ * spelling for another.
  * ## Reading the lists
  * [SINGLE_INSTANCE] is what must stay stable. [FRESH_EACH_READ] is deliberately unscoped - a value
  * object or a lookup where a second one costs nothing. Both are pinned: a type moving between them
@@ -92,10 +96,12 @@ class GraphScopeStabilityTest {
             "activePlugin",
             "activeSceneManager",
             "activeSceneSync",
-            "activityMonitor",
             "alarmSoundPlayer",
             "appRepository",
             "appScope",
+            // Since Metro 1.6.0 the graph keeps one map of providers. Each provider still makes a new
+            // view model on every call - `ContributedViewModelsTest` checks that.
+            "assistedFactoryProviders",
             "authFlowOut",
             "authorizedClientsRepository",
             "automation",
@@ -115,6 +121,7 @@ class GraphScopeStabilityTest {
             "clientPairingRepository",
             "cloudDirectoryManager",
             "cloudStorageManager",
+            "commandExecutor",
             "commandQueue",
             "concentrationHelper",
             "config",
@@ -134,6 +141,7 @@ class GraphScopeStabilityTest {
             "dexcomTirCalculator",
             "dstHelper",
             "dstHelperPlugin",
+            "eatReminder",
             "exportPasswordDataStore",
             "fabricPrivacy",
             "fabricPrivacyImpl",
@@ -148,6 +156,7 @@ class GraphScopeStabilityTest {
             "importExportPrefs",
             "insulinManager",
             "iobCobCalculator",
+            "keyValueStore",
             "l",
             "lastBgData",
             "lastLocationDataContainer",
@@ -157,6 +166,7 @@ class GraphScopeStabilityTest {
             "loop",
             "maintenance",
             "manualAssistedFactoryProviders",
+            "masterActionExecutor",
             "notificationHolder",
             "notificationManager",
             "nsClient",
@@ -180,7 +190,7 @@ class GraphScopeStabilityTest {
             "processedTbrEbData",
             "profileFunction",
             "profileRepository",
-            "profileSwitchExpiryScheduler",
+            "profileSwitchScheduler",
             "profileSwitchSilentGate",
             "profileUtil",
             "profiler",
@@ -206,12 +216,10 @@ class GraphScopeStabilityTest {
             "sceneStore",
             "scenes",
             "secureEncrypt",
-            "sharedPreferences",
             "signatureVerifierPlugin",
             "smsCommunicatorPlugin",
             "smsCommunicatorRepository",
             "snackbarNotificationFallback",
-            "sp",
             "storage",
             "storeDataForDb",
             "tddCalculator",
@@ -222,12 +230,13 @@ class GraphScopeStabilityTest {
             "translator",
             "trendCalculator",
             "uiInteraction",
+            "uiRestart",
             "userEntryLogger",
             "userEntryPresentationHelper",
             "versionCheckerUtils",
+            "viewModelProviders", // one map since Metro 1.6.0, see assistedFactoryProviders
             "visibilityContext",
             "wearPlugin",
-            "wizardBolusExecutor",
             "wizardExecutor",
             "workflowChainData",
             "xDripBroadcast",
@@ -238,7 +247,6 @@ class GraphScopeStabilityTest {
         /** Deliberately a new instance per read. */
         val FRESH_EACH_READ = setOf(
             "apsResult",
-            "assistedFactoryProviders",
             "autosensData",
             "bolusWizard",
             "cloudStorageProviders",
@@ -254,21 +262,23 @@ class GraphScopeStabilityTest {
             "pumpSync",
             "pumpWithConcentration",
             "sourceGraph",
-            "viewModelProviders",
-            "widgetUpdater",
             "workersGraph",
         )
 
         /**
-         * Cannot be built in a plain-JVM test: `workManager` needs WorkManager initialised. Pinned so a
+         * Cannot be built in a plain-JVM test: `workManager` needs WorkManager initialised, and
+         * `widgetUpdater` registers a display listener on the main looper when it is built. Pinned so a
          * newly-throwing accessor cannot quietly shrink this test's reach.
+         *
+         * `widgetUpdater` was in [FRESH_EACH_READ] until #5246 made it one instance, because it now
+         * holds the update that waits for a display to turn on.
          *
          * `graphConfigRepository` used to be here, blamed on its DataStore file. That was the wrong
          * reason: the blocker was `Dispatchers.Main` in its constructor scope, so nothing could build
          * it without a main looper. `cbe022ba1b` moved that scope to the IO dispatcher and it builds
          * now, which is why it moved into [SINGLE_INSTANCE] - the list grew rather than shrank.
          */
-        val UNREADABLE = setOf("workManager")
+        val UNREADABLE = setOf("widgetUpdater", "workManager")
 
         /**
          * Pump accessors that cannot be built in a plain-JVM test: the Dana RS `bleTransport` reaches

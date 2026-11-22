@@ -12,7 +12,6 @@ import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.notifications.NotificationId
 import app.aaps.core.interfaces.notifications.NotificationManager
-import app.aaps.core.interfaces.pump.PumpSync
 import app.aaps.core.interfaces.pump.ble.BleTransport
 import app.aaps.core.interfaces.pump.ble.BleTransportListener
 import app.aaps.core.interfaces.pump.ble.PairingState
@@ -37,11 +36,10 @@ import app.aaps.pump.danars.comm.DanaRSPacket
 import app.aaps.pump.danars.comm.DanaRSPacketEtcKeepConnection
 import app.aaps.pump.danars.encryption.BleEncryption
 import app.aaps.pump.danars.encryption.EncryptionType
-import kotlinx.coroutines.runBlocking
-import java.util.concurrent.ScheduledFuture
-import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.AppScope
+import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.SingleIn
+import java.util.concurrent.ScheduledFuture
 
 @SingleIn(AppScope::class)
 @Inject
@@ -54,12 +52,12 @@ class BLEComm(
     private val danaPump: DanaPump,
     private val danaRSPlugin: DanaRSPlugin,
     private val bleEncryption: BleEncryption,
-    private val pumpSync: PumpSync,
     private val dateUtil: DateUtil,
     private val preferences: Preferences,
     private val configBuilder: ConfigBuilder,
     private val notificationManager: NotificationManager,
-    private val bleTransport: BleTransport
+    private val bleTransport: BleTransport,
+    private val alarmReporter: DanaRSAlarmReporter
 ) : BleTransportListener {
 
     companion object {
@@ -71,6 +69,13 @@ class BLEComm(
 
         // How many failed packets in a row before the log says the keys are the likely cause.
         private const val DECRYPT_FAILURE_WARN_THRESHOLD = 5
+
+        // After a pump check answer we do not know, the queue waits this long before it connects again (#5571).
+        internal const val UNKNOWN_ANSWER_PAUSE_MS = 30_000L
+
+        // The pairing is cleared only when the unknown answers go on for this long and this many times.
+        internal const val UNKNOWN_ANSWER_CLEAR_AFTER_MS = 5 * 60_000L
+        internal const val UNKNOWN_ANSWER_CLEAR_AFTER_TRIES = 3
     }
 
     private var scheduledDisconnection: ScheduledFuture<*>? = null
@@ -84,17 +89,28 @@ class BLEComm(
             bleEncryption.setEnhancedEncryption(newValue)
             field = newValue
         }
-    private var isEasyMode: Boolean = false
-    private var isUnitUD: Boolean = false
 
     @Volatile var isConnected = false
-    var isConnecting = false
+    @Volatile private var connecting = false
+
+    /**
+     * True while a connection is made, and also during the pause after a pump check answer we do not know. The queue
+     * does not connect while this is true, so the pause keeps it from connecting again too early.
+     */
+    val isConnecting: Boolean
+        get() = connecting || dateUtil.now() < reconnectNotBefore
+
+    // See onUnknownPumpCheckAnswer
+    @Volatile private var reconnectNotBefore = 0L
+    private var firstUnknownAnswerAt = 0L
+    private var unknownAnswerCount = 0
 
     /** Timeout for waiting for pump reply in [sendMessage]. Default 5 s; tests may lower this. */
     var messageTimeoutMs: Long = 5000L
     private var encryptedDataRead = false
     private var encryptedCommandSent = false
     private var pumpCheckSent = false  // Guard against duplicate ENCRYPTION__PUMP_CHECK
+    private var pumpCheckOk = false  // The pump answered the pump check with OK on this connection, see onUnknownPumpCheckAnswer
 
     init {
         bleTransport.setListener(this)
@@ -131,8 +147,12 @@ class BLEComm(
         encryptedDataRead = false
         encryptedCommandSent = false
         pumpCheckSent = false  // Reset the guard flag for new connection
+        pumpCheckOk = false
         notificationsEnabled = false  // Same lifetime: a new connection registers notifications again
-        isConnecting = true
+        // The queue does not call connect during the pause. A call now comes from the user (the pair wizard), who
+        // wants the connection at once.
+        reconnectNotBefore = 0L
+        connecting = true
         bufferLength = 0
         bleTransport.updatePairingState(PairingState(step = PairingStep.CONNECTING))
         aapsLogger.debug(LTag.PUMPBTCOMM, "Trying to create a new connection from: $from")
@@ -141,7 +161,7 @@ class BLEComm(
 
         if (!bleTransport.gatt.connect(address)) {
             aapsLogger.error(LTag.PUMPBTCOMM, "connectGatt failed from: $from")
-            isConnecting = false
+            connecting = false
             return false
         }
         // Register for notifications early (before connection completes) to avoid
@@ -153,7 +173,7 @@ class BLEComm(
 
     @Synchronized
     fun stopConnecting() {
-        isConnecting = false
+        connecting = false
     }
 
     @SuppressLint("MissingPermission")
@@ -209,6 +229,7 @@ class BLEComm(
         encryptedDataRead = false
         encryptedCommandSent = false
         pumpCheckSent = false  // Reset for next connection attempt
+        pumpCheckOk = false
         notificationsEnabled = false
     }
 
@@ -278,11 +299,12 @@ class BLEComm(
         } else {
             close()
             isConnected = false
-            isConnecting = false
+            connecting = false
             encryption = EncryptionType.ENCRYPTION_DEFAULT
             encryptedDataRead = false
             encryptedCommandSent = false
             pumpCheckSent = false  // Reset for next connection attempt
+            pumpCheckOk = false
             notificationsEnabled = false
             rxBus.send(EventPumpStatusChanged(EventPumpStatusChanged.Status.DISCONNECTED))
             bleTransport.updatePairingState(PairingState(step = PairingStep.IDLE))
@@ -362,7 +384,8 @@ class BLEComm(
                             // AA AA LEN TYPE CODE PARAMS CHECKSUM1 CHECKSUM2 EE EE
                             //           ^---- LEN -----^
                             // total packet length 2 + 1 + readBuffer[2] + 2 + 2
-                            length = readBuffer[2].toInt()
+                            // Unsigned: a Dana-i2 bulk history packet is up to 202 bytes long (20 records)
+                            length = readBuffer[2].toInt() and 0xFF
                             // test if there is enough data loaded
                             if (length + 7 > bufferLength)
                                 return
@@ -487,14 +510,25 @@ class BLEComm(
 
     // 1st packet response
     private fun processConnectResponse(decryptedBuffer: ByteArray) {
+        // AAPS sends one pump check per connection, so a second answer belongs to a check sent just before, on the same
+        // radio link (see onUnknownPumpCheckAnswer). The pump already said OK and the handshake goes on: leave it alone.
+        if (pumpCheckOk) {
+            aapsLogger.warn(LTag.PUMPBTCOMM, "<<<<< ENCRYPTION__PUMP_CHECK second answer (${decryptedBuffer.size} bytes) ignored, the pump already answered OK")
+            return
+        }
+        // Read again on every connection by the easy menu check (0xF4), pumps without easy mode keep false
+        danaPump.isEasyModeEnabled = false
+        danaPump.isConfigUD = false
         // response OK v1
         if (decryptedBuffer.size == 4 && decryptedBuffer[2] == 'O'.code.toByte() && decryptedBuffer[3] == 'K'.code.toByte()) {
             aapsLogger.debug(LTag.PUMPBTCOMM, "<<<<< " + "ENCRYPTION__PUMP_CHECK (OK)" + " " + DanaRSPacket.toHexString(decryptedBuffer))
+            unknownAnswerCount = 0
+            pumpCheckOk = true
             encryption = EncryptionType.ENCRYPTION_DEFAULT
             danaPump.ignoreUserPassword = false
             // Grab pairing key from preferences if exists
             val pairingKey = preferences.get(DanaStringComposedKey.ParingKey, danaRSPlugin.mDeviceName)
-            aapsLogger.debug(LTag.PUMPBTCOMM, "Using stored pairing key: $pairingKey")
+            aapsLogger.debug(LTag.PUMPBTCOMM, if (pairingKey.isNotEmpty()) "Using stored pairing key" else "No stored pairing key")
             if (pairingKey.isNotEmpty()) {
                 sendPasskeyCheck(pairingKey)
             } else {
@@ -504,6 +538,8 @@ class BLEComm(
             // response OK v3
         } else if (decryptedBuffer.size == 9 && decryptedBuffer[2] == 'O'.code.toByte() && decryptedBuffer[3] == 'K'.code.toByte()) {
             // v3 2nd layer encryption
+            unknownAnswerCount = 0
+            pumpCheckOk = true
             encryption = EncryptionType.ENCRYPTION_RSv3
             danaPump.ignoreUserPassword = true
             danaPump.hwModel = decryptedBuffer[5].toInt()
@@ -512,46 +548,75 @@ class BLEComm(
             preferences.put(DanaStringComposedKey.V3RandomSyncKey, danaRSPlugin.mDeviceName, value = String.format("%02x", decryptedBuffer[decryptedBuffer.size - 1]))
 
             if (danaPump.hwModel == 0x05) {
-                aapsLogger.debug(LTag.PUMPBTCOMM, "<<<<< " + "ENCRYPTION__PUMP_CHECK V3 (OK)" + " " + DanaRSPacket.toHexString(decryptedBuffer))
+                aapsLogger.debug(LTag.PUMPBTCOMM, "<<<<< " + "ENCRYPTION__PUMP_CHECK V3 (OK)" + " " + secret(decryptedBuffer))
                 // Dana RS Pump
                 sendV3PairingInformation()
             } else if (danaPump.hwModel == 0x06) {
-                aapsLogger.debug(LTag.PUMPBTCOMM, "<<<<< " + "ENCRYPTION__PUMP_CHECK V3 EASY (OK)" + " " + DanaRSPacket.toHexString(decryptedBuffer))
+                aapsLogger.debug(LTag.PUMPBTCOMM, "<<<<< " + "ENCRYPTION__PUMP_CHECK V3 EASY (OK)" + " " + secret(decryptedBuffer))
                 // Dana RS Easy
                 sendEasyMenuCheck()
             }
             // response OK BLE5
         } else if (decryptedBuffer.size == 14 && decryptedBuffer[2] == 'O'.code.toByte() && decryptedBuffer[3] == 'K'.code.toByte()) {
             // v3 2nd layer encryption
+            unknownAnswerCount = 0
+            pumpCheckOk = true
             encryption = EncryptionType.ENCRYPTION_BLE5
             danaPump.ignoreUserPassword = true
             danaPump.hwModel = decryptedBuffer[5].toInt()
             danaPump.protocol = decryptedBuffer[7].toInt()
             val pairingKey = DanaRSPacket.asciiStringFromBuff(decryptedBuffer, 8, 6) // used while bonding
-            if (decryptedBuffer[8] != 0.toByte())
-                preferences.put(DanaStringComposedKey.Ble5PairingKey, danaRSPlugin.mDeviceName, value = pairingKey)
+            if (decryptedBuffer[8] != 0.toByte()) {
+                if (isValidBle5Key(pairingKey)) preferences.put(DanaStringComposedKey.Ble5PairingKey, danaRSPlugin.mDeviceName, value = pairingKey)
+                else aapsLogger.error(LTag.PUMPBTCOMM, "The pump sent a pairing key that is not 6 digits, not stored")
+            }
 
+            // The key must be 6 digits. BleEncryption.setBle5Key reads it as numbers, and anything else threw inside
+            // the Bluetooth callback: the handshake then stopped with no message at all.
             val storedPairingKey = preferences.get(DanaStringComposedKey.Ble5PairingKey, danaRSPlugin.mDeviceName)
-            if (storedPairingKey.isBlank()) {
+            if (!isValidBle5Key(storedPairingKey)) {
+                if (storedPairingKey.isNotBlank()) aapsLogger.error(LTag.PUMPBTCOMM, "Stored pairing key is not 6 digits")
                 connectAddress?.let { bleTransport.adapter.removeBond(it) }
                 disconnect("Non existing pairing key")
                 return
             }
 
-            if (danaPump.hwModel == 0x09 || danaPump.hwModel == 0x0A) {
-                bleEncryption.setBle5Key(storedPairingKey.encodeToByteArray())
-                aapsLogger.debug(LTag.PUMPBTCOMM, "<<<<< " + "ENCRYPTION__PUMP_CHECK BLE5 (OK)" + " " + DanaRSPacket.toHexString(decryptedBuffer))
-                // Dana-i BLE5 Pump
-                sendBLE5PairingInformation()
+            aapsLogger.debug(
+                LTag.PUMPBTCOMM,
+                "<<<<< ENCRYPTION__PUMP_CHECK BLE5 (OK) model=0x%02X protocol=0x%02X %s".format(danaPump.hwModel, danaPump.protocol, secret(decryptedBuffer))
+            )
+            when (danaPump.hwModel) {
+                // Dana-i BLE5 and Dana-i2 use the same key setup
+                0x09, 0x0B -> {
+                    bleEncryption.setBle5Key(storedPairingKey.encodeToByteArray())
+                    sendBLE5PairingInformation()
+                }
+
+                // Pumps with easy mode: first check if easy mode is on, processEasyMenuCheck continues
+                0x0A, 0x0C -> {
+                    bleEncryption.setBle5Key(storedPairingKey.encodeToByteArray())
+                    sendEasyMenuCheck()
+                }
+
+                else       -> {
+                    // Without this branch an unknown model made the handshake stop without any message
+                    val message = rh.gs(R.string.danars_unsupported_model, "0x%02X".format(danaPump.hwModel))
+                    aapsLogger.error(LTag.PUMPBTCOMM, message)
+                    bleTransport.updatePairingState(PairingState(step = PairingStep.ERROR, errorMessage = message))
+                    mSendQueue.clear()
+                    rxBus.send(EventPumpStatusChanged(EventPumpStatusChanged.Status.DISCONNECTED, message))
+                }
             }
-            // response PUMP : error status
-        } else if (decryptedBuffer.size == 6 && decryptedBuffer[2] == 'P'.code.toByte() && decryptedBuffer[3] == 'U'.code.toByte() && decryptedBuffer[4] == 'M'.code.toByte() && decryptedBuffer[5] == 'P'.code.toByte()) {
-            aapsLogger.debug(LTag.PUMPBTCOMM, "<<<<< " + "ENCRYPTION__PUMP_CHECK (PUMP)" + " " + DanaRSPacket.toHexString(decryptedBuffer))
-            bleTransport.updatePairingState(PairingState(step = PairingStep.ERROR, errorMessage = rh.gs(R.string.pumperror)))
+            // response PUMP : error status. Dana-i2 adds 1 byte of error flags.
+            // It must not fall into the wrong serial branch below, that would clear the pairing.
+        } else if ((decryptedBuffer.size == 6 || decryptedBuffer.size == 7) && decryptedBuffer[2] == 'P'.code.toByte() && decryptedBuffer[3] == 'U'.code.toByte() && decryptedBuffer[4] == 'M'.code.toByte() && decryptedBuffer[5] == 'P'.code.toByte()) {
+            val errorFlags = if (decryptedBuffer.size == 7) decryptedBuffer[6].toInt() and 0xFF else null
+            val errorText = alarmReporter.pumpCheckErrorText(errorFlags)
+            aapsLogger.debug(LTag.PUMPBTCOMM, "<<<<< ENCRYPTION__PUMP_CHECK (PUMP) $errorText ${DanaRSPacket.toHexString(decryptedBuffer)}")
+            bleTransport.updatePairingState(PairingState(step = PairingStep.ERROR, errorMessage = errorText))
             mSendQueue.clear()
-            rxBus.send(EventPumpStatusChanged(EventPumpStatusChanged.Status.DISCONNECTED, rh.gs(R.string.pumperror)))
-            runBlocking { pumpSync.insertAnnouncement(rh.gs(R.string.pumperror), null, danaPump.pumpType(), danaPump.serialNumber) }
-            notificationManager.post(NotificationId.PUMP_ERROR, TextRef.AndroidRes(R.string.pumperror))
+            rxBus.send(EventPumpStatusChanged(EventPumpStatusChanged.Status.DISCONNECTED, errorText))
+            alarmReporter.report(errorText)
             // response BUSY: error status
         } else if (decryptedBuffer.size == 6 && decryptedBuffer[2] == 'B'.code.toByte() && decryptedBuffer[3] == 'U'.code.toByte() && decryptedBuffer[4] == 'S'.code.toByte() && decryptedBuffer[5] == 'Y'.code.toByte()) {
             aapsLogger.debug(LTag.PUMPBTCOMM, "<<<<< " + "ENCRYPTION__PUMP_CHECK (BUSY)" + " " + DanaRSPacket.toHexString(decryptedBuffer))
@@ -559,13 +624,46 @@ class BLEComm(
             mSendQueue.clear()
             rxBus.send(EventPumpStatusChanged(EventPumpStatusChanged.Status.DISCONNECTED, rh.gs(app.aaps.core.ui.R.string.pump_busy)))
         } else {
-            // ERROR in response, wrong serial number
-            aapsLogger.debug(LTag.PUMPBTCOMM, "<<<<< " + "ENCRYPTION__PUMP_CHECK (ERROR)" + " " + DanaRSPacket.toHexString(decryptedBuffer))
-            bleTransport.updatePairingState(PairingState(step = PairingStep.ERROR, errorMessage = rh.gs(app.aaps.core.ui.R.string.connection_error)))
-            mSendQueue.clear()
-            rxBus.send(EventPumpStatusChanged(EventPumpStatusChanged.Status.DISCONNECTED, rh.gs(app.aaps.core.ui.R.string.connection_error)))
+            onUnknownPumpCheckAnswer(decryptedBuffer)
+        }
+    }
+
+    private fun isValidBle5Key(key: String): Boolean = key.length == 6 && key.all { it in '0'..'9' }
+
+    /**
+     * The pump answered the pump check with something we do not know, for example the empty `02 00` of #5571.
+     *
+     * This used to clear the pairing at once. Tests on a real Dana-i2 show that it is not a pairing problem: the pump
+     * answers `02 00` to a second pump check that comes while it still handles the first one. That happens when AAPS
+     * connects again within a second: Android keeps the radio link up for a moment after a disconnect, so the pump
+     * sees both checks on one link. At the first really new link it answers OK. A wrong pump name or an old bond gives
+     * no answer at all.
+     *
+     * When the pump already answered OK on this connection, processConnectResponse ignores the `02 00`, as the
+     * handshake goes on. Otherwise the link is closed at once, which also empties the send queue of this class (not the
+     * command queue), and the queue waits [UNKNOWN_ANSWER_PAUSE_MS] before it connects again. The pairing is cleared
+     * only when the pump keeps answering like this, at least [UNKNOWN_ANSWER_CLEAR_AFTER_TRIES] times over
+     * [UNKNOWN_ANSWER_CLEAR_AFTER_MS] with no OK answer between them. The Dana RS was not tested this way, so the
+     * clearing stays for that case.
+     */
+    private fun onUnknownPumpCheckAnswer(decryptedBuffer: ByteArray) {
+        aapsLogger.debug(LTag.PUMPBTCOMM, "<<<<< " + "ENCRYPTION__PUMP_CHECK (ERROR)" + " " + DanaRSPacket.toHexString(decryptedBuffer))
+        val now = dateUtil.now()
+        if (unknownAnswerCount == 0) firstUnknownAnswerAt = now
+        unknownAnswerCount++
+        val clearPairing = unknownAnswerCount >= UNKNOWN_ANSWER_CLEAR_AFTER_TRIES && now - firstUnknownAnswerAt >= UNKNOWN_ANSWER_CLEAR_AFTER_MS
+        val errorText = rh.gs(app.aaps.core.ui.R.string.connection_error)
+        bleTransport.updatePairingState(PairingState(step = PairingStep.ERROR, errorMessage = errorText))
+        rxBus.send(EventPumpStatusChanged(EventPumpStatusChanged.Status.DISCONNECTED, errorText))
+        reconnectNotBefore = now + UNKNOWN_ANSWER_PAUSE_MS
+        disconnect("Unknown pump check answer")
+        if (clearPairing) {
+            aapsLogger.error(LTag.PUMPBTCOMM, "Unknown pump check answer $unknownAnswerCount times in ${(now - firstUnknownAnswerAt) / 1000} s, clearing the pairing")
+            unknownAnswerCount = 0
             danaRSPlugin.clearPairing()
             notificationManager.post(NotificationId.WRONG_SERIAL_NUMBER, TextRef.AndroidRes(app.aaps.core.ui.R.string.password_cleared))
+        } else {
+            aapsLogger.warn(LTag.PUMPBTCOMM, "Unknown pump check answer #$unknownAnswerCount, next connection in ${UNKNOWN_ANSWER_PAUSE_MS / 1000} s")
         }
     }
 
@@ -573,7 +671,7 @@ class BLEComm(
     private fun sendPasskeyCheck(pairingKey: String) {
         val encodedPairingKey = DanaRSPacket.hexToBytes(pairingKey)
         val bytes = bleEncryption.getEncryptedPacket(BleEncryption.DANAR_PACKET__OPCODE_ENCRYPTION__CHECK_PASSKEY, encodedPairingKey, null)
-        aapsLogger.debug(LTag.PUMPBTCOMM, ">>>>> " + "ENCRYPTION__CHECK_PASSKEY" + " " + DanaRSPacket.toHexString(bytes))
+        aapsLogger.debug(LTag.PUMPBTCOMM, ">>>>> " + "ENCRYPTION__CHECK_PASSKEY" + " " + secret(bytes))
         bleTransport.gatt.writeCharacteristic(bytes)
     }
 
@@ -623,10 +721,10 @@ class BLEComm(
 
     // 2nd packet response
     private fun processEncryptionResponse(decryptedBuffer: ByteArray) {
-        aapsLogger.debug(LTag.PUMPBTCOMM, "<<<<< " + "ENCRYPTION__TIME_INFORMATION " + DanaRSPacket.toHexString(decryptedBuffer))
+        aapsLogger.debug(LTag.PUMPBTCOMM, "<<<<< " + "ENCRYPTION__TIME_INFORMATION " + secret(decryptedBuffer))
         if (encryption == EncryptionType.ENCRYPTION_BLE5) {
             isConnected = true
-            isConnecting = false
+            connecting = false
             bleTransport.updatePairingState(PairingState(step = PairingStep.CONNECTED))
             aapsLogger.debug(LTag.PUMPBTCOMM, "Connect !!")
         } else if (encryption == EncryptionType.ENCRYPTION_RSv3) {
@@ -637,7 +735,7 @@ class BLEComm(
                 if (randomPairingKey.isNotEmpty() && pairingKey.isNotEmpty()) {
                     // expecting successful connect
                     isConnected = true
-                    isConnecting = false
+                    connecting = false
                     bleTransport.updatePairingState(PairingState(step = PairingStep.CONNECTED))
                     aapsLogger.debug(LTag.PUMPBTCOMM, "Connect !!")
                     // Send one message to confirm communication
@@ -654,7 +752,7 @@ class BLEComm(
             var pass: Int = (decryptedBuffer[size - 1].toInt() and 0x000000FF shl 8) + (decryptedBuffer[size - 2].toInt() and 0x000000FF)
             pass = pass xor 3463
             danaPump.rsPassword = String.format("%04X", pass)
-            aapsLogger.debug(LTag.PUMPBTCOMM, "Pump user password: " + danaPump.rsPassword)
+            aapsLogger.debug(LTag.PUMPBTCOMM, "Pump user password received")
             if (!danaPump.isRSPasswordOK) {
                 aapsLogger.error(LTag.PUMPBTCOMM, "Wrong pump password")
                 notificationManager.post(NotificationId.WRONG_PUMP_PASSWORD, TextRef.AndroidRes(R.string.wrongpumppassword))
@@ -664,7 +762,7 @@ class BLEComm(
                 notificationManager.dismiss(NotificationId.WRONG_PUMP_PASSWORD)
                 rxBus.send(EventPumpStatusChanged(EventPumpStatusChanged.Status.CONNECTED))
                 isConnected = true
-                isConnecting = false
+                connecting = false
                 bleTransport.updatePairingState(PairingState(step = PairingStep.CONNECTED))
                 aapsLogger.debug(LTag.PUMPBTCOMM, "RS connected and status read")
             }
@@ -710,29 +808,45 @@ class BLEComm(
 
     // 2nd or 3rd packet v1 response
     private fun processPairingRequest2(decryptedBuffer: ByteArray) {
-        aapsLogger.debug(LTag.PUMPBTCOMM, "<<<<< " + "ENCRYPTION__PASSKEY_RETURN " + DanaRSPacket.toHexString(decryptedBuffer))
+        aapsLogger.debug(LTag.PUMPBTCOMM, "<<<<< " + "ENCRYPTION__PASSKEY_RETURN " + secret(decryptedBuffer))
         // Paring is successful, sending time info
         sendTimeInfo()
         val pairingKey = byteArrayOf(decryptedBuffer[2], decryptedBuffer[3])
         // store pairing key to preferences
         preferences.put(DanaStringComposedKey.ParingKey, danaRSPlugin.mDeviceName, value = DanaRSPacket.bytesToHex(pairingKey))
-        aapsLogger.debug(LTag.PUMPBTCOMM, "Got pairing key: " + DanaRSPacket.bytesToHex(pairingKey))
+        aapsLogger.debug(LTag.PUMPBTCOMM, "Got pairing key")
     }
+
+    /**
+     * Stands in for a handshake packet that holds the pump password or pairing key material. The debug log is
+     * what "Send logs" shares for support, and those bytes let anyone near the pump pose as this phone
+     * (#5205). The length is still logged, which is what matters when a handshake fails.
+     */
+    private fun secret(packet: ByteArray): String = "(${packet.size} bytes, not logged: holds pairing data)"
 
     // 3rd packet Easy menu pump
     private fun sendEasyMenuCheck() {
         val bytes: ByteArray = bleEncryption.getEncryptedPacket(BleEncryption.DANAR_PACKET__OPCODE_ENCRYPTION__GET_EASY_MENU_CHECK, null, null)
+        aapsLogger.debug(LTag.PUMPBTCOMM, ">>>>> ENCRYPTION__GET_EASY_MENU_CHECK ${DanaRSPacket.toHexString(bytes)}")
         bleTransport.gatt.writeCharacteristic(bytes)
     }
 
     // 3rd packet Easy menu response
     private fun processEasyMenuCheck(decryptedBuffer: ByteArray) {
-        isEasyMode = decryptedBuffer[2] == 0x01.toByte()
-        isUnitUD = decryptedBuffer[3] == 0x01.toByte()
+        // Easy menu: 0x00 normal mode, 0x01 easy menu, 0x02 no easy menu. Basal unit: 0x00 U/h, 0x01 U/d
+        danaPump.isEasyModeEnabled = decryptedBuffer[2] == 0x01.toByte()
+        danaPump.isConfigUD = decryptedBuffer[3] == 0x01.toByte()
+        aapsLogger.debug(
+            LTag.PUMPBTCOMM,
+            "<<<<< ENCRYPTION__GET_EASY_MENU_CHECK easyMode=${danaPump.isEasyModeEnabled} basalUnitUD=${danaPump.isConfigUD} ${DanaRSPacket.toHexString(decryptedBuffer)}"
+        )
 
         // request time information
-        if (encryption == EncryptionType.ENCRYPTION_RSv3) sendV3PairingInformation()
-        else sendTimeInfo()
+        when (encryption) {
+            EncryptionType.ENCRYPTION_RSv3 -> sendV3PairingInformation()
+            EncryptionType.ENCRYPTION_BLE5 -> sendBLE5PairingInformation()
+            else                           -> sendTimeInfo()
+        }
     }
 
     // the rest of packets
@@ -747,7 +861,8 @@ class BLEComm(
         processedMessage = message
         val command = byteArrayOf(message.type.toByte(), message.opCode.toByte())
         val params = message.getRequestParams()
-        if (!isConnected && !isConnecting) {
+        // `connecting`, not isConnecting: during the pause after an unknown pump check answer there is no link
+        if (!isConnected && !connecting) {
             aapsLogger.debug(LTag.PUMPBTCOMM, ">>>>> IGNORING (NOT CONNECTED) " + message.friendlyName + " " + DanaRSPacket.toHexString(command) + " " + DanaRSPacket.toHexString(params))
             return
         }
@@ -780,9 +895,11 @@ class BLEComm(
                 var reBytes = ByteArray(bytes.size - sendBytes.size)
                 System.arraycopy(bytes, sendBytes.size, reBytes, 0, reBytes.size)
                 bytes = reBytes
-                // and send
-                bleTransport.gatt.writeCharacteristic(sendBytes)
-                // The rest split to parts per 20 bytes max
+                // The rest split to parts per 20 bytes max, and queued BEFORE the first part is written. The write
+                // callback sends the next queued part. A callback that came before the queueing found nothing, the
+                // message was never completed and the pump never answered ("Reply not received"). A profile upload of the
+                // emulator UI test under load got no answer at all, which fits. A real phone's callback is only slower,
+                // not ordered.
                 while (true) {
                     if (bytes.size > 20) {
                         val addBytes = ByteArray(20)
@@ -796,6 +913,8 @@ class BLEComm(
                         break
                     }
                 }
+                // and send
+                bleTransport.gatt.writeCharacteristic(sendBytes)
             } else {
                 bleTransport.gatt.writeCharacteristic(bytes)
             }

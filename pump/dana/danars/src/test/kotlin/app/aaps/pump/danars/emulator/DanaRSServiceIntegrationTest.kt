@@ -74,6 +74,7 @@ import app.aaps.pump.danars.comm.DanaRSPacketOptionSetPumpUTCAndTimeZone
 import app.aaps.pump.danars.comm.DanaRSPacketOptionSetUserOption
 import app.aaps.pump.danars.encryption.BleEncryption
 import app.aaps.pump.danars.services.BLEComm
+import app.aaps.pump.danars.services.DanaRSAlarmReporter
 import app.aaps.pump.danars.services.DanaRSService
 import app.aaps.shared.tests.TestBase
 import com.google.common.truth.Truth.assertThat
@@ -87,6 +88,7 @@ import org.junit.jupiter.api.Test
 import org.mockito.ArgumentMatchers.anyInt
 import org.mockito.Mock
 import org.mockito.kotlin.any
+import org.mockito.kotlin.anyVararg
 import org.mockito.kotlin.atLeast
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
@@ -148,7 +150,7 @@ class DanaRSServiceIntegrationTest : TestBase() {
     fun setup() {
         // Mock basics
         whenever(rh.gs(anyInt())).thenReturn("test")
-        whenever(rh.gs(anyInt(), any())).thenReturn("test")
+        whenever(rh.gs(anyInt(), anyVararg())).thenReturn("test")
         whenever(preferences.get(any<DanaStringNonKey>())).thenReturn("")
         whenever(preferences.get(any<StringComposedNonPreferenceKey>(), any())).thenReturn("")
         whenever(preferences.get(DanaStringNonKey.Password)).thenReturn("0000")
@@ -192,8 +194,9 @@ class DanaRSServiceIntegrationTest : TestBase() {
 
         bleComm = BLEComm(
             aapsLogger, rh, context, rxBus, danaRSMessageHashTable, danaPump,
-            danaRSPlugin, bleEncryption, pumpSync, dateUtil, preferences,
-            configBuilder, notificationManager, emulatorTransport
+            danaRSPlugin, bleEncryption, dateUtil, preferences,
+            configBuilder, notificationManager, emulatorTransport,
+            DanaRSAlarmReporter(rh, notificationManager, pumpSync, danaPump)
         ).apply {
             messageTimeoutMs = 5000 // Prod default; a tighter budget times out spuriously under CI CPU starvation
         }
@@ -646,9 +649,9 @@ class DanaRSServiceIntegrationTest : TestBase() {
         whenever(dateUtil.now()).thenReturn(System.currentTimeMillis() - 20_000)
 
         danaRSService.bolus(detailedBolusInfo)
+        // The pump sets its last bolus at the end of the bolus, on its own thread, as a real one does.
+        emulatorTransport.awaitPendingCallbacks()
 
-        // Bolus command was sent and processed by emulator (synchronously in sendMessage,
-        // before the polling loop)
         assertThat(emulatorTransport.pumpState.lastBolusAmount).isWithin(0.01).of(0.05)
         assertThat(emulatorTransport.pumpState.reservoirRemainingUnits)
             .isWithin(0.01).of(initialReservoir - 0.05)
@@ -663,6 +666,8 @@ class DanaRSServiceIntegrationTest : TestBase() {
         whenever(dateUtil.now()).thenReturn(System.currentTimeMillis() - 20_000)
 
         danaRSService.bolus(detailedBolusInfo)
+        // The pump sets its last bolus at the end of the bolus, on its own thread, as a real one does.
+        emulatorTransport.awaitPendingCallbacks()
 
         // bolus calls commandQueue.loadEvents which is mocked, but verify PumpSync was
         // queried during readPumpStatus (not called directly from bolus, but good to

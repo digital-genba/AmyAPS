@@ -10,9 +10,11 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import app.aaps.core.data.model.TE
 import app.aaps.core.data.model.UE
+import app.aaps.core.data.time.SystemTimeZone
 import app.aaps.core.data.time.T
 import app.aaps.core.data.ue.Action
 import app.aaps.core.data.ue.Sources
+import app.aaps.core.interfaces.InterfacesStrings
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.di.ApplicationScope
@@ -37,7 +39,7 @@ import app.aaps.core.interfaces.rx.events.EventDiaconnG8PumpLogReset
 import app.aaps.core.interfaces.rx.events.EventShowSnackbar
 import app.aaps.core.interfaces.rx.weardata.CwfData
 import app.aaps.core.interfaces.rx.weardata.CwfMetadataKey
-import app.aaps.core.interfaces.sharedPreferences.SP
+import app.aaps.core.interfaces.sharedPreferences.KeyValueStore
 import app.aaps.core.interfaces.storage.Storage
 import app.aaps.core.interfaces.ui.UiInteraction
 import app.aaps.core.interfaces.userEntry.UserEntryPresentationHelper
@@ -63,10 +65,13 @@ import app.aaps.implementation.maintenance.data.PrefsStatusImpl
 import app.aaps.implementation.maintenance.formats.EncryptedPrefsFormat
 import app.aaps.implementation.maintenance.formats.ExportMetadata
 import app.aaps.shared.impl.weardata.ZipWatchfaceFormat
+import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.Assisted
 import dev.zacsweers.metro.AssistedFactory
 import dev.zacsweers.metro.AssistedInject
+import dev.zacsweers.metro.ContributesBinding
 import dev.zacsweers.metro.Inject
+import dev.zacsweers.metro.SingleIn
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -78,9 +83,6 @@ import java.io.FileNotFoundException
 import java.io.IOException
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
-import dev.zacsweers.metro.AppScope
-import dev.zacsweers.metro.ContributesBinding
-import dev.zacsweers.metro.SingleIn
 
 /**
  * Created by mike on 03.07.2016.
@@ -95,7 +97,7 @@ private fun filenameTimestamp(): String =
 class ImportExportPrefsImpl(
     private var aapsLogger: AAPSLogger,
     private val rh: ResourceHelper,
-    private val sp: SP,
+    private val sp: KeyValueStore,
     private val preferences: Preferences,
     private val config: Config,
     private val persistenceLayer: PersistenceLayer,
@@ -371,12 +373,12 @@ class ImportExportPrefsImpl(
         val n6 = Settings.Global.getString(context.contentResolver, "device_name")
 
         // name provided (hopefully) by user
-        val patientName = preferences.get(StringKey.GeneralPatientName)
-        val defaultPatientName = rh.gs(app.aaps.core.ui.R.string.patient_name_default)
+        val instanceName = preferences.get(StringKey.GeneralInstanceName)
+        val defaultInstanceName = rh.gs(app.aaps.core.ui.R.string.patient_name_default)
 
         // name we detect from OS
-        val systemName = n1 ?: n4 ?: n5 ?: n6 ?: defaultPatientName
-        return if (patientName.isNotEmpty() && patientName != defaultPatientName) patientName else systemName
+        val systemName = n1 ?: n4 ?: n5 ?: n6 ?: defaultInstanceName
+        return if (instanceName.isNotEmpty() && instanceName != defaultInstanceName) instanceName else systemName
     }
 
     /**
@@ -655,7 +657,7 @@ class ImportExportPrefsImpl(
     override suspend fun executeCsvExport(): ExportResult {
         aapsLogger.info(LTag.CORE, "${CloudConstants.LOG_PREFIX} CSV_EXPORT executeCsvExport started")
 
-        val entries = persistenceLayer.getUserEntryFilteredDataFromTime(MidnightTime.calc() - T.days(90).msecs())
+        val entries = persistenceLayer.getUserEntryFilteredDataFromTime(MidnightTime.last(SystemTimeZone.current()) - T.days(90).msecs())
         aapsLogger.info(LTag.CORE, "${CloudConstants.LOG_PREFIX} CSV_EXPORT entries count=${entries.size}")
 
         val csvLocal = preferences.get(BooleanNonKey.ExportCsvLocalEnabled)
@@ -742,7 +744,7 @@ class ImportExportPrefsImpl(
         override suspend fun doWorkAndLog(): Result {
             aapsLogger.info(LTag.CORE, "${CloudConstants.LOG_PREFIX} CSV_EXPORT doWorkAndLog started")
 
-            val entries = persistenceLayer.getUserEntryFilteredDataFromTime(MidnightTime.calc() - T.days(90).msecs())
+            val entries = persistenceLayer.getUserEntryFilteredDataFromTime(MidnightTime.last(SystemTimeZone.current()) - T.days(90).msecs())
 
             aapsLogger.info(LTag.CORE, "${CloudConstants.LOG_PREFIX} CSV_EXPORT entries count=${entries.size}")
 
@@ -781,7 +783,7 @@ class ImportExportPrefsImpl(
                 saveCsv(newFile, userEntries)
                 rxBus.send(EventShowSnackbar(rh.gs(R.string.ue_exported), EventShowSnackbar.Type.Success))
             } catch (e: FileNotFoundException) {
-                rxBus.send(EventShowSnackbar(rh.gs(R.string.filenotfound) + " " + newFile, EventShowSnackbar.Type.Error))
+                rxBus.send(EventShowSnackbar(rh.gs(InterfacesStrings.confirmation_line, rh.gs(R.string.filenotfound), newFile), EventShowSnackbar.Type.Error))
                 aapsLogger.error(LTag.CORE, "Unhandled exception", e)
                 ret = Result.failure(workDataOf("Error" to "Error FileNotFoundException"))
             } catch (e: IOException) {

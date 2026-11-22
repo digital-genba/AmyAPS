@@ -32,33 +32,50 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.aaps.core.data.model.Scene
 import app.aaps.core.data.model.SceneEndAction
+import app.aaps.core.keys.interfaces.ClientRole
 import app.aaps.core.interfaces.navigation.ElementType
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.compose.AapsSpacing
 import app.aaps.core.ui.compose.AapsTheme
 import app.aaps.core.ui.compose.AapsTopAppBar
+import app.aaps.core.ui.compose.LocalClientRole
 import app.aaps.core.ui.compose.MasterOfflineBanner
+import app.aaps.core.ui.compose.ScreenMode
 import app.aaps.core.ui.compose.dialogs.OkDialog
 import app.aaps.core.ui.compose.dialogs.ThreeButtonDialog
 import app.aaps.core.ui.compose.metroViewModel
 import app.aaps.core.ui.compose.navigation.label
+import app.aaps.core.ui.compose.rowAction
 import app.aaps.core.ui.compose.stringResource
 import app.aaps.core.ui.compose.stringResourceOrNull
-import app.aaps.ui.UiStrings
 
+/**
+ * The scenes, to start, stop and change.
+ *
+ * Like the temp target and QuickWizard screens it opens in [ScreenMode.PLAY] with bolus protection, where
+ * scenes can only be started and stopped. Adding, changing and deleting scenes needs [ScreenMode.EDIT],
+ * which [onRequestEditMode] grants after asking for settings protection.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SceneListScreen(
     onNavigateToWizard: () -> Unit,
     onNavigateToEditor: (sceneId: String) -> Unit,
     onNavigateBack: () -> Unit,
+    initialMode: ScreenMode = ScreenMode.EDIT,
+    onRequestEditMode: (onGranted: () -> Unit) -> Unit = {},
     viewModel: SceneListViewModel = metroViewModel()
 ) {
     val scenes by viewModel.scenes.collectAsStateWithLifecycle()
@@ -68,6 +85,10 @@ fun SceneListScreen(
     val activationReasons by viewModel.activationReasons.collectAsStateWithLifecycle()
     val editLockReasons by viewModel.editLockReasons.collectAsStateWithLifecycle()
     val masterOfflineBanner by viewModel.masterOfflineBanner.collectAsStateWithLifecycle()
+    var screenMode by rememberSaveable { mutableStateOf(initialMode) }
+    val isPlayMode = screenMode == ScreenMode.PLAY
+    // Changing scenes is an admin's, like the temp target presets.
+    val canDefine = LocalClientRole.current.allows(ClientRole.Admin)
 
     // Dialog handling
     when (val state = dialogState) {
@@ -121,14 +142,21 @@ fun SceneListScreen(
                     IconButton(onClick = onNavigateBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(CoreUiStrings.back))
                     }
+                },
+                actions = {
+                    if (isPlayMode && canDefine)
+                        IconButton(onClick = { onRequestEditMode { screenMode = ScreenMode.EDIT } }, enabled = masterOfflineBanner == null) {
+                            Icon(Icons.Default.Edit, contentDescription = stringResource(CoreUiStrings.switch_to_edit))
+                        }
                 }
             )
         },
         floatingActionButton = {
             // FAB is hidden when the master is unreachable on AAPSCLIENT — same reasoning as
             // the per-card lock: a new scene definition would need to sync to master to be
-            // useful, so don't surface the affordance when sync can't happen.
-            if (masterOfflineBanner == null) {
+            // useful, so don't surface the affordance when sync can't happen. A new scene is a preset, so it is
+            // also hidden from a role below admin, and in PLAY mode.
+            if (!isPlayMode && masterOfflineBanner == null && canDefine) {
                 FloatingActionButton(onClick = onNavigateToWizard) {
                     Icon(Icons.Default.Add, contentDescription = stringResource(CoreUiStrings.scene))
                 }
@@ -166,17 +194,13 @@ fun SceneListScreen(
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(AapsSpacing.medium),
+                    contentPadding = PaddingValues(start = AapsSpacing.medium, top = AapsSpacing.medium, end = AapsSpacing.medium, bottom = AapsSpacing.fabClearance),
                     verticalArrangement = Arrangement.spacedBy(AapsSpacing.medium)
                 ) {
                     items(scenes, key = { it.id }) { scene ->
                         val isActive = activeState?.scene?.id == scene.id
                         val isInvalid = scene.id in invalidSceneIds
-                        val subtitle = stringResource(
-                            CoreUiStrings.scene_summary,
-                            scene.actions.size,
-                            viewModel.formatMinutes(scene.defaultDurationMinutes)
-                        )
+                        val subtitle = viewModel.summary(scene)
                         val chainTargetId = (scene.endAction as? SceneEndAction.ChainScene)?.sceneId
                         val chainTargetName = chainTargetId?.let { id -> scenes.firstOrNull { it.id == id }?.name }
                         SceneCard(
@@ -189,6 +213,7 @@ fun SceneListScreen(
                             activationReason = activationReasons[scene.id],
                             editLockReason = editLockReasons[scene.id],
                             masterReachable = masterOfflineBanner == null,
+                            editable = !isPlayMode,
                             onActivate = { viewModel.requestActivation(scene) },
                             onDeactivate = { viewModel.requestDeactivation() },
                             onEdit = { onNavigateToEditor(scene.id) },
@@ -203,6 +228,8 @@ fun SceneListScreen(
 }
 
 /**
+ * @param editable false in PLAY mode: the scene can be started and stopped, but not changed, deleted
+ *   or switched on and off.
  * @see SceneCardNormalPreview
  * @see SceneCardActivePreview
  * @see SceneCardInvalidPreview
@@ -218,13 +245,14 @@ internal fun SceneCard(
     activationReason: String? = null,
     editLockReason: String? = null,
     masterReachable: Boolean = true,
+    editable: Boolean = true,
     onActivate: () -> Unit,
     onDeactivate: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onToggleEnabled: () -> Unit = {}
 ) {
-    val editEnabled = editLockReason == null
+    val editEnabled = editable && editLockReason == null
     val nameColor = when {
         isInvalid -> MaterialTheme.colorScheme.error
         isActive  -> AapsTheme.elementColors.scene
@@ -247,7 +275,9 @@ internal fun SceneCard(
             Checkbox(
                 checked = scene.isEnabled,
                 onCheckedChange = { onToggleEnabled() },
-                enabled = editEnabled
+                enabled = editEnabled,
+                // The name is a separate Text, so a screen reader heard only "checkbox, checked".
+                modifier = Modifier.semantics { contentDescription = scene.name }
             )
             Icon(
                 imageVector = SceneIcons.fromKey(scene.icon).icon,
@@ -292,8 +322,9 @@ internal fun SceneCard(
                 // Surface the edit-lock reason (running scene / master offline) so the user understands why the
                 // edit/delete/checkbox actions are disabled — unless it just repeats the activation reason already
                 // shown above (a global master block sets both gates to the same text → would otherwise double up).
+                // In PLAY mode there is nothing to edit, so there is no reason to give.
                 val editReasonDuplicated = activationReason != null && !isActive && editLockReason == activationReason
-                if (editLockReason != null && !editReasonDuplicated) {
+                if (editable && editLockReason != null && !editReasonDuplicated) {
                     Text(
                         text = editLockReason,
                         style = MaterialTheme.typography.bodySmall,
@@ -304,22 +335,24 @@ internal fun SceneCard(
             Row {
                 if (isActive) {
                     IconButton(onClick = onDeactivate, enabled = masterReachable) {
-                        Icon(Icons.Default.Stop, contentDescription = stringResource(CoreUiStrings.scene_deactivate))
+                        Icon(Icons.Default.Stop, contentDescription = rowAction(CoreUiStrings.scene_deactivate, scene.name))
                     }
                 } else {
                     IconButton(
                         onClick = onActivate,
                         enabled = scene.isEnabled && activationReason == null
                     ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = stringResource(CoreUiStrings.scene_activate))
+                        Icon(Icons.Default.PlayArrow, contentDescription = rowAction(CoreUiStrings.scene_activate, scene.name))
                     }
                 }
-                IconButton(onClick = onEdit, enabled = editEnabled) {
-                    Icon(Icons.Default.Edit, contentDescription = stringResource(CoreUiStrings.switch_to_edit))
-                }
-                if (scene.isDeletable) {
-                    IconButton(onClick = onDelete, enabled = editEnabled) {
-                        Icon(Icons.Default.Delete, contentDescription = stringResource(CoreUiStrings.delete))
+                if (editable) {
+                    IconButton(onClick = onEdit, enabled = editEnabled) {
+                        Icon(Icons.Default.Edit, contentDescription = rowAction(CoreUiStrings.switch_to_edit, scene.name))
+                    }
+                    if (scene.isDeletable) {
+                        IconButton(onClick = onDelete, enabled = editEnabled) {
+                            Icon(Icons.Default.Delete, contentDescription = rowAction(CoreUiStrings.delete, scene.name))
+                        }
                     }
                 }
             }

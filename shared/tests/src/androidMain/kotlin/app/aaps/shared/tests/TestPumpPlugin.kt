@@ -5,6 +5,7 @@ import app.aaps.core.data.pump.defs.PumpDescription
 import app.aaps.core.data.pump.defs.PumpType
 import app.aaps.core.data.pump.defs.TimeChangeType
 import app.aaps.core.interfaces.profile.EffectiveProfile
+import app.aaps.core.interfaces.profile.Profile.ProfileValue
 import app.aaps.core.interfaces.pump.DetailedBolusInfo
 import app.aaps.core.interfaces.pump.Pump
 import app.aaps.core.interfaces.pump.PumpEnactResult
@@ -13,6 +14,7 @@ import app.aaps.core.interfaces.pump.PumpProfile
 import app.aaps.core.interfaces.pump.PumpRate
 import app.aaps.core.interfaces.pump.PumpSync
 import app.aaps.core.interfaces.pump.PumpWithConcentration
+import app.aaps.core.interfaces.pump.defs.fillFor
 import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.implementation.pump.PumpEnactResultObject
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,12 +39,20 @@ class TestPumpPlugin(val rh: ResourceHelper) : PumpWithConcentration {
         }
 
     val baseBasal = 0.0
-    override var pumpDescription = PumpDescription()
+    // Filled for its own pump type, so a test reads the values of a pump that exists.
+    override var pumpDescription = PumpDescription().fillFor(PumpType.GENERIC_AAPS)
 
     override fun isInitialized(): Boolean = true
     override fun isSuspended(): Boolean = pumpSuspended
     override fun isBusy(): Boolean = false
+    /** How often the queue asked to connect. */
+    var connectCalls = 0
+
+    /** How long the queue keeps the link after its last command, see [waitForDisconnectionInSeconds]. */
+    var lingerSeconds = 0
+
     override fun connect(reason: String) {
+        connectCalls++
         connected = true
     }
 
@@ -54,7 +64,7 @@ class TestPumpPlugin(val rh: ResourceHelper) : PumpWithConcentration {
         connected = false
     }
 
-    override fun waitForDisconnectionInSeconds(): Int = 0
+    override fun waitForDisconnectionInSeconds(): Int = lingerSeconds
     override suspend fun getPumpStatus(reason: String) { /* not needed */
     }
 
@@ -62,17 +72,33 @@ class TestPumpPlugin(val rh: ResourceHelper) : PumpWithConcentration {
     override suspend fun setNewBasalProfile(profile: PumpProfile): PumpEnactResult = PumpEnactResultObject(rh)
     override fun isThisProfileSet(profile: EffectiveProfile): Boolean = isProfileSet
     override fun isThisProfileSet(profile: PumpProfile): Boolean = isProfileSet
+
+    /** What the pump reports it really gives after a profile set. null: the profile exactly. */
+    var delivered: List<ProfileValue>? = null
+    override fun deliveredBasal(): List<ProfileValue>? = delivered
     private val _lastBolusTime = MutableStateFlow<Long?>(null)
     override val lastBolusTime: StateFlow<Long?> = _lastBolusTime
     private val _lastBolusAmount = MutableStateFlow<PumpInsulin?>(null)
     override val lastBolusAmount: StateFlow<PumpInsulin?> = _lastBolusAmount
     override val lastDataTime: StateFlow<Long> = _lastDataTime
     override val baseBasalRate: PumpRate get() = PumpRate(baseBasal)
-    private val _reservoirLevel = MutableStateFlow(PumpInsulin(0.0))
-    override val reservoirLevel: StateFlow<PumpInsulin> = _reservoirLevel
+    private val _reservoirLevel = MutableStateFlow<PumpInsulin?>(PumpInsulin(0.0))
+    override val reservoirLevel: StateFlow<PumpInsulin?> = _reservoirLevel
+
+    /** What the pump reports in its reservoir. null: not known yet. */
+    var reservoir: PumpInsulin?
+        get() = _reservoirLevel.value
+        set(value) {
+            _reservoirLevel.value = value
+        }
     private val _batteryLevel = MutableStateFlow<Int?>(null)
     override val batteryLevel: StateFlow<Int?> = _batteryLevel
-    override suspend fun deliverTreatment(detailedBolusInfo: DetailedBolusInfo): PumpEnactResult = PumpEnactResultObject(rh).success(true)
+    /** Runs while a bolus is given, for a test that needs a bolus to take some time or to lose the link. */
+    var duringBolus: suspend () -> Unit = {}
+    override suspend fun deliverTreatment(detailedBolusInfo: DetailedBolusInfo): PumpEnactResult {
+        duringBolus()
+        return PumpEnactResultObject(rh).success(true)
+    }
     override fun stopBolusDelivering() { /* not needed */
     }
 

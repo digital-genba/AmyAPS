@@ -24,6 +24,7 @@ import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.compose.AapsSpacing
 import app.aaps.core.ui.compose.AapsTheme
+import app.aaps.core.ui.compose.LocalAapsScale
 import app.aaps.core.ui.compose.icons.IcNoTbr
 import app.aaps.core.ui.compose.icons.IcTbrHigh
 import app.aaps.core.ui.compose.icons.IcTbrLow
@@ -59,7 +60,7 @@ fun TbrChip(
             shape = RoundedCornerShape(AapsSpacing.chipCornerRadius),
             color = containerColor,
             modifier = modifier
-                .height(AapsSpacing.chipHeight)
+                .height(AapsSpacing.chipHeight * LocalAapsScale.current)
                 .semantics { stateDescription = tbrState }
         ) {
             Box(
@@ -87,7 +88,7 @@ private fun TbrState.toDescription(): TextRef = when (this) {
     TbrState.NONE -> CoreUiStrings.tbr_state_none
 }
 
-private fun TbrState.toIcon(): ImageVector = when (this) {
+internal fun TbrState.toIcon(): ImageVector = when (this) {
     TbrState.HIGH -> IcTbrHigh
     TbrState.LOW  -> IcTbrLow
     TbrState.NONE -> IcNoTbr

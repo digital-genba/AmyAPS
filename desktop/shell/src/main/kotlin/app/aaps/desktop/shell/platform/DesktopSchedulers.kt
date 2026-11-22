@@ -6,6 +6,10 @@ import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.notifications.NotificationId
 import app.aaps.core.interfaces.notifications.NotificationManager
+import app.aaps.core.interfaces.resources.TextResolver
+import app.aaps.core.interfaces.utils.DateUtil
+import app.aaps.core.ui.CoreUiStrings
+import app.aaps.implementation.alerts.EatReminderAlarm
 import app.aaps.implementation.scenes.SceneExpiryRunner
 import app.aaps.implementation.scenes.SceneExpiryScheduler
 import dev.zacsweers.metro.AppScope
@@ -47,6 +51,42 @@ class DesktopReminderScheduler(
 }
 
 /**
+ * The "time to eat" alarm, as a coroutine that waits and then posts, like [DesktopReminderScheduler].
+ *
+ * The wait lives in this process, so closing AAPS forgets it. At the next start `EatReminder.restore` sets it
+ * again when the end is still ahead. One alarm at a time; scheduling again replaces it.
+ */
+@ContributesBinding(AppScope::class)
+@SingleIn(AppScope::class)
+@Inject
+class DesktopEatReminderAlarm(
+    private val aapsLogger: AAPSLogger,
+    private val notificationManager: NotificationManager,
+    private val rh: TextResolver,
+    private val dateUtil: DateUtil,
+    @ApplicationScope private val scope: CoroutineScope
+) : EatReminderAlarm {
+
+    private var pending: Job? = null
+
+    override fun schedule(startedAt: Long, endsAt: Long): Boolean {
+        cancel()
+        val delayMs = endsAt - dateUtil.now()
+        aapsLogger.debug(LTag.CORE, "Eat reminder in ${delayMs}ms")
+        pending = scope.launch {
+            delay(delayMs)
+            notificationManager.post(NotificationId.TOAST_ALARM, rh.gs(CoreUiStrings.eat_reminder_title))
+        }
+        return true
+    }
+
+    override fun cancel() {
+        pending?.cancel()
+        pending = null
+    }
+}
+
+/**
  * Ends a timed scene when its time is up, by running the shared expiry rule.
  *
  * **This has to run code, not show a message.** [SceneExpiryRunner] reverts the two things that do
@@ -65,7 +105,8 @@ class DesktopReminderScheduler(
  * **The runner is looked up when it is needed, not when the graph is built.** There is a cycle
  * otherwise, and a real one: `SceneExpiryRunner` needs `SceneExecutor`, which needs this scheduler
  * back. Android never meets it because WorkManager constructs the runner itself, so it is not a
- * graph node there - the same reason `LazyCalculationExecutor` exists. Deferring is safe rather than
+ * graph node there. It is the same kind of cycle that `LazyCalculationExecutor` breaks for the
+ * calculation, on every platform. Deferring is safe rather than
  * merely convenient: nothing is resolved while the graph is assembled, and the first lookup happens
  * when a scene actually expires, by which time every object in the loop exists.
  *

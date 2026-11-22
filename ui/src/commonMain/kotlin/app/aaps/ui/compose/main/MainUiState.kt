@@ -48,11 +48,7 @@ data class MainUiState(
     // Running TBR state for chip (HIGH / LOW / NONE)
     val tbrState: TbrState = TbrState.NONE,
     // SMB enabled in APS preferences — drives a small triangle marker on the running-mode chip
-    val smbEnabled: Boolean = false,
-    // QuickWizard entries for treatment bottom sheet
-    val quickWizardItems: List<QuickWizardItem> = emptyList(),
-    // Navigation-triggered dialogs
-    val showAuthFailedDialog: Boolean = false
+    val smbEnabled: Boolean = false
 )
 
 @Immutable

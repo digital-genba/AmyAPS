@@ -1,9 +1,6 @@
 package app.aaps.plugins.sync.wear.compose
 
-import app.aaps.core.ui.compose.stringResource
-import app.aaps.core.interfaces.InterfacesStrings
-import app.aaps.core.ui.CoreUiStrings
-import app.aaps.plugins.sync.SyncStrings
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
@@ -60,15 +57,19 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.aaps.core.interfaces.InterfacesStrings
 import app.aaps.core.keys.KeysStrings
 import app.aaps.core.keys.PushedWatchfaceId
 import app.aaps.core.keys.StringKey
+import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.compose.AapsSpacing
 import app.aaps.core.ui.compose.LocalSnackbarHostState
 import app.aaps.core.ui.compose.ToolbarConfig
 import app.aaps.core.ui.compose.dialogs.OkCancelDialog
 import app.aaps.core.ui.compose.dialogs.OkDialog
+import app.aaps.core.ui.compose.stringResource
 import app.aaps.plugins.sync.R
+import app.aaps.plugins.sync.SyncStrings
 
 @Composable
 internal fun WearScreen(
@@ -174,7 +175,11 @@ internal fun WearScreen(
                     onInfosWatchface = { viewModel.showCwfInfos() },
                     onExportTemplate = { viewModel.exportCustomWatchface() },
                     onMoreWatchfaces = {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, moreWatchfacesUrl.toUri()))
+                        // No usable browser (none installed, or blocked by Family Link): do nothing rather than crash
+                        try {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, moreWatchfacesUrl.toUri()))
+                        } catch (_: ActivityNotFoundException) {
+                        }
                     },
                     onSelectPushedWatchface = { viewModel.selectPushedWatchface(it) },
                     onDismissCustomWatchfaceNotShown = { viewModel.dismissCustomWatchfaceNotShown() },

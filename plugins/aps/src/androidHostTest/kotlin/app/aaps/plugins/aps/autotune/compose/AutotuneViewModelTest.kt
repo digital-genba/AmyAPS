@@ -1,6 +1,9 @@
 package app.aaps.plugins.aps.autotune.compose
 
+import app.aaps.core.data.model.GlucoseUnit
+import app.aaps.core.data.model.ICfg
 import app.aaps.core.interfaces.aps.Loop
+import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.logging.UserEntryLogger
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.profile.ProfileRepository
@@ -12,13 +15,15 @@ import app.aaps.core.interfaces.rx.events.EventShowDialog
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.interfaces.Preferences
+import app.aaps.core.ui.R
 import app.aaps.core.ui.elements.WeekDay
 import app.aaps.plugins.aps.autotune.AutotuneFS
+import app.aaps.plugins.aps.autotune.AutotuneGolden
 import app.aaps.plugins.aps.autotune.AutotunePlugin
 import app.aaps.plugins.aps.autotune.data.ATProfile
 import app.aaps.plugins.aps.autotune.events.EventAutotuneUpdateGui
+import app.aaps.shared.tests.stubTextRefResolution
 import com.google.common.truth.Truth.assertThat
-import dev.zacsweers.metro.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -44,6 +49,7 @@ import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.verifyBlocking
 import org.mockito.kotlin.whenever
+import java.util.Locale
 
 /**
  * Unit test for the SHARED, synchronous state logic of [AutotuneViewModel].
@@ -69,6 +75,7 @@ internal class AutotuneViewModelTest {
     @Mock private lateinit var rxBus: RxBus
     @Mock private lateinit var uel: UserEntryLogger
     @Mock private lateinit var loop: Loop
+    @Mock private lateinit var config: Config
 
     private val autotunePlugin: AutotunePlugin = mock()
     private val profileStoreProvider: () -> ProfileStore = mock()
@@ -79,6 +86,8 @@ internal class AutotuneViewModelTest {
     @BeforeEach
     fun setUp() {
         MockitoAnnotations.openMocks(this)
+        // The VM asks for its strings as TextRef. This routes them to the id stubs below, as the app does.
+        stubTextRefResolution(rh)
         Dispatchers.setMain(StandardTestDispatcher())
 
         // Non-null members dereferenced synchronously in init { }:
@@ -93,7 +102,7 @@ internal class AutotuneViewModelTest {
         // some other VM does not also release this one's init into its unstubbed dependencies.
         sut = AutotuneViewModel(
             autotunePlugin, autotuneFS, profileFunction, profileUtil, profileRepository, preferences,
-            dateUtil, rh, rxBus, uel, loop, profileStoreProvider, atProfileProvider,
+            dateUtil, rh, rxBus, uel, loop, config, profileStoreProvider, atProfileProvider,
             CoroutineScope(StandardTestDispatcher(TestCoroutineScheduler()))
         )
     }
@@ -143,12 +152,12 @@ internal class AutotuneViewModelTest {
         whenever(autotunePlugin.selectedProfile).thenReturn("")
         whenever(autotunePlugin.days).thenReturn(WeekDay())
         whenever(autotunePlugin.calcDays(any())).thenReturn(1)
-        whenever(rh.gs(app.aaps.core.ui.R.string.active)).thenReturn("Active")
-        whenever(rh.gs(app.aaps.core.ui.R.string.profileswitch_ismissing)).thenReturn("No profile")
+        whenever(rh.gs(R.string.active)).thenReturn("Active")
+        whenever(rh.gs(R.string.profileswitch_ismissing)).thenReturn("No profile")
         whenever(dateUtil.dateAndTimeString(any())).thenReturn("now")
         return AutotuneViewModel(
             autotunePlugin, autotuneFS, profileFunction, profileUtil, profileRepository, preferences,
-            dateUtil, rh, rxBus, uel, loop, profileStoreProvider, atProfileProvider,
+            dateUtil, rh, rxBus, uel, loop, config, profileStoreProvider, atProfileProvider,
             CoroutineScope(SupervisorJob() + StandardTestDispatcher(scheduler))
         )
     }
@@ -163,8 +172,8 @@ internal class AutotuneViewModelTest {
         whenever(autotunePlugin.tunedProfile).thenReturn(tunedProfile)
         whenever(preferences.get(BooleanKey.AutotuneCircadianIcIsf)).thenReturn(false)
         whenever(profileFunction.getRunningOrRequestedICfg()).thenReturn(null)
-        whenever(rh.gs(app.aaps.core.ui.R.string.autotune)).thenReturn("Autotune")
-        whenever(rh.gs(app.aaps.core.ui.R.string.profile_switch_no_insulin)).thenReturn("No insulin in use")
+        whenever(rh.gs(R.string.autotune)).thenReturn("Autotune")
+        whenever(rh.gs(R.string.profile_switch_no_insulin)).thenReturn("No insulin in use")
 
         advanceableSut(testScheduler).onProfileSwitchConfirm()
         advanceUntilIdle()
@@ -175,5 +184,91 @@ internal class AutotuneViewModelTest {
         verifyBlocking(profileFunction, never()) {
             createProfileSwitch(anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull())
         }
+    }
+
+    // A refused switch (here: the pump cannot take the tuned basal) closed the dialog as if it was done.
+    @Test
+    fun `confirming a profile switch that is refused says why`() = runTest {
+        val tunedProfile = mock<ATProfile>()
+        whenever(tunedProfile.profileName).thenReturn("Tuned")
+        whenever(tunedProfile.profileStore(false)).thenReturn(mock())
+        whenever(autotunePlugin.tunedProfile).thenReturn(tunedProfile)
+        whenever(preferences.get(BooleanKey.AutotuneCircadianIcIsf)).thenReturn(false)
+        whenever(profileFunction.getRunningOrRequestedICfg()).thenReturn(ICfg("Insulin", peak = 75, dia = 6.0, concentration = 1.0))
+        // createProfileSwitch is not stubbed, so it refuses (null).
+        whenever(profileFunction.profileSwitchRefusal(any(), any(), any(), any(), any(), any())).thenReturn("The pump cannot take it")
+        whenever(rh.gs(R.string.autotune)).thenReturn("Autotune")
+
+        advanceableSut(testScheduler).onProfileSwitchConfirm()
+        advanceUntilIdle()
+
+        val captor = argumentCaptor<EventShowDialog.Ok>()
+        verify(rxBus).send(captor.capture())
+        assertThat(captor.firstValue.message).isEqualTo("The pump cannot take it")
+    }
+
+    // A switch made on a client stays there and never reaches the master, so the client does not offer it. Copying the
+    // tuned profile into the profile store is still offered: the store is synced.
+    @Test
+    fun `a client does not offer the switch to the tuned profile`() = runTest {
+        whenever(config.AAPSCLIENT).thenReturn(true)
+        val vm = tunedSut(testScheduler)
+        advanceUntilIdle()
+
+        assertThat(vm.uiState.value.lastRunSuccess).isTrue()
+        assertThat(vm.uiState.value.showProfileSwitch).isFalse()
+        assertThat(vm.uiState.value.showCopyLocal).isTrue()
+    }
+
+    @Test
+    fun `the master offers the switch to the tuned profile`() = runTest {
+        whenever(config.AAPSCLIENT).thenReturn(false)
+        val vm = tunedSut(testScheduler)
+        advanceUntilIdle()
+
+        assertThat(vm.uiState.value.showProfileSwitch).isTrue()
+    }
+
+    private fun atProfile(isf: Double, ic: Double, firstBasal: Double, dia: Double) =
+        ATProfile(preferences, profileUtil, dateUtil, rh, profileStoreProvider, mock()).also {
+            it.iCfg = ICfg("Insulin", peak = 75, dia = dia, concentration = 1.0)
+            it.isf = isf
+            it.ic = ic
+            for (h in 0..23) it.basal[h] = if (h == 0) firstBasal else 0.725 + h / 1000.0
+            it.basalUnTuned[5] = 2
+        }
+
+    // The rows show numbers in the phone's language with a fixed count of decimals. A tie is rounded up from its
+    // shortest decimal text, so 1.005 shows 1.01 although the double is a little below 1.005.
+    @Test
+    fun `the result rows keep their number format`() = runTest {
+        val oldLocale = Locale.getDefault()
+        Locale.setDefault(Locale.GERMANY)
+        try {
+            whenever(autotunePlugin.result).thenReturn("done")
+            whenever(autotunePlugin.pumpProfile).thenReturn(atProfile(isf = 45.35, ic = 1.005, firstBasal = 0.0, dia = 6.05))
+            whenever(autotunePlugin.tunedProfile).thenReturn(atProfile(isf = 0.15, ic = 10.0, firstBasal = 1.2345, dia = 5.0))
+            whenever(preferences.get(BooleanKey.AutotuneTuneInsulinCurve)).thenReturn(true)
+            whenever(profileFunction.getUnits()).thenReturn(GlucoseUnit.MGDL)
+            val vm = tunedSut(testScheduler)
+            advanceUntilIdle()
+
+            val rows = (vm.uiState.value.paramRows + vm.uiState.value.basalRows).joinToString("\n") { "${it.label}|${it.profileValue}|${it.tunedValue}|${it.missing}" }
+            AutotuneGolden.assertMatches("result_rows_mgdl.txt", rows)
+
+            whenever(profileFunction.getUnits()).thenReturn(GlucoseUnit.MMOL)
+            vm.onLoadLastRun()
+            advanceUntilIdle()
+            AutotuneGolden.assertMatches("result_rows_mmol.txt", vm.uiState.value.paramRows.joinToString("\n") { "${it.profileValue}|${it.tunedValue}" })
+        } finally {
+            Locale.setDefault(oldLocale)
+        }
+    }
+
+    /** A VM whose last run succeeded, so the result buttons are worked out. */
+    private fun tunedSut(scheduler: TestCoroutineScheduler): AutotuneViewModel {
+        whenever(autotunePlugin.lastRunSuccess).thenReturn(true)
+        whenever(rh.gs(any<Int>())).thenReturn("text")
+        return advanceableSut(scheduler)
     }
 }

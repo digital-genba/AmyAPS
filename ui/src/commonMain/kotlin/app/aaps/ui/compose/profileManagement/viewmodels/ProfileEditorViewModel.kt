@@ -17,15 +17,13 @@ import app.aaps.core.interfaces.profile.ProfileRepository
 import app.aaps.core.interfaces.profile.ProfileUtil
 import app.aaps.core.interfaces.profile.PureProfile
 import app.aaps.core.interfaces.profile.SingleProfile
-import app.aaps.core.interfaces.protection.ProtectionCheck
 import app.aaps.core.interfaces.resources.TextResolver
 import app.aaps.core.interfaces.utils.DateUtil
-import app.aaps.core.interfaces.utils.Round
 import app.aaps.core.interfaces.utils.HardLimits
+import app.aaps.core.interfaces.utils.Round
 import app.aaps.core.objects.extensions.toPureProfile
 import app.aaps.core.objects.profile.ProfileSealed
 import app.aaps.core.ui.CoreUiStrings
-import app.aaps.ui.UiStrings
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.ContributesIntoMap
 import dev.zacsweers.metro.Inject
@@ -47,7 +45,6 @@ data class ProfileUiState(
     val currentProfile: SingleProfileState? = null,
     val isEdited: Boolean = false,
     val isValid: Boolean = true,
-    val isLocked: Boolean = false,
     val selectedTab: Int = 0,
     val units: String = GlucoseUnit.MGDL.displayLabel,
     val usingDynamicIsf: Boolean = false,
@@ -79,6 +76,9 @@ data class ProfileUiState(
 
 // Registers itself: @ViewModelKey infers the key from the class. No graph entry, and deliberately
 // unscoped so each screen gets its own.
+// No protection check here: every way into the editor (profile management in EDIT mode, the setup
+// wizard) already required PREFERENCES. Checking again here failed once the short protection
+// session had expired, and left the user on a lock screen with no way to unlock (#5236).
 @ContributesIntoMap(AppScope::class, binding = binding<ViewModel>())
 @ViewModelKey
 @Stable
@@ -91,8 +91,7 @@ class ProfileEditorViewModel(
     private val activePlugin: ActivePlugin,
     private val profileUtil: ProfileUtil,
     private val hardLimits: HardLimits,
-    val dateUtil: DateUtil,
-    private val protectionCheck: ProtectionCheck
+    val dateUtil: DateUtil
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ProfileUiState())
@@ -145,7 +144,7 @@ class ProfileEditorViewModel(
                 } else {
                     // Somebody else changed this profile (NS push, master edit, editor reset).
                     // Reload — discards in-flight edits.
-                    editingProfile = stored
+                    editingProfile = stored?.withShownBasal()
                     locallyEdited = false
                     lastSaved = null
                     loadState()
@@ -159,7 +158,6 @@ class ProfileEditorViewModel(
 
         val profiles = profileRepository.profiles.value.map { it.name }
         val profile = editingProfile
-        val isLocked = protectionCheck.isLocked(ProtectionCheck.Protection.PREFERENCES)
 
         val currentUnits = profile?.mgdl?.let { if (it) GlucoseUnit.MGDL else GlucoseUnit.MMOL } ?: profileFunction.getUnits()
         val isMgdl = currentUnits == GlucoseUnit.MGDL
@@ -185,7 +183,6 @@ class ProfileEditorViewModel(
                 currentProfile = profile?.toState(),
                 isEdited = locallyEdited,
                 isValid = profile != null && tabErrors.isEmpty(),
-                isLocked = isLocked,
                 units = currentUnits.displayLabel,
                 usingDynamicIsf = aps?.usingDynamicIsf() == true,
                 usingDynamicIc = aps?.supportsDynamicIc() == true,
@@ -231,10 +228,20 @@ class ProfileEditorViewModel(
     fun selectProfile(index: Int) {
         isNewDraft = false
         editingIndex = index
-        editingProfile = profileRepository.profiles.value.getOrNull(index)
+        editingProfile = profileRepository.profiles.value.getOrNull(index)?.withShownBasal()
         locallyEdited = false
         viewModelScope.launch { loadState() }
     }
+
+    /**
+     * The profile with its basal rates rounded to [BASAL_STEP], the precision the rows show. A profile
+     * from autotune has three decimals, and the editor then stepped and summed digits the user could
+     * not see (#5401, #5402). No pump AAPS drives takes a finer basal step, so nothing is lost.
+     *
+     * Not an edit on its own: opening a profile does not offer Save, and the next save stores it.
+     */
+    private fun SingleProfile.withShownBasal(): SingleProfile =
+        copy(basal = basal.map { it.copy(amount = Round.roundTo(it.amount, BASAL_STEP)) })
 
     /**
      * Begin editing a brand-new, unpersisted profile. The draft is empty (and therefore invalid, so
@@ -257,8 +264,9 @@ class ProfileEditorViewModel(
     fun updateIsfEntry(index: Int, timeValue: TimeValue) =
         editProfile { it.copy(isf = it.isf.timeValues().updateAt(index, timeValue).toBlocks()) }
 
+    // Rounded like a loaded profile (see withShownBasal): a typed 1.125 would be a hidden third digit again
     fun updateBasalEntry(index: Int, timeValue: TimeValue) =
-        editProfile { it.copy(basal = it.basal.timeValues().updateAt(index, timeValue).toBlocks()) }
+        editProfile { it.copy(basal = it.basal.timeValues().updateAt(index, timeValue.copy(value = Round.roundTo(timeValue.value, BASAL_STEP))).toBlocks()) }
 
     fun updateTargetEntry(index: Int, low: TimeValue, high: TimeValue) =
         editProfile {
@@ -440,6 +448,9 @@ class ProfileEditorViewModel(
         // [profileRepository.profiles]; the subscriber re-clones editingProfile from the
         // freshly-loaded list and refreshes the UI. Drops any local edits, matching the
         // legacy "discard changes" semantics.
+        // After a save the reloaded profile is the one we saved, and the subscriber would take it for
+        // the echo of that save and keep the edits. A reset always wants the reload.
+        lastSaved = null
         viewModelScope.launch { profileRepository.reset() }
     }
 
@@ -454,8 +465,11 @@ class ProfileEditorViewModel(
             targetHigh = target.highTimeValues()
         )
 
-    private companion object {
+    companion object {
 
-        const val DAY_SECONDS = 24 * 3600
+        private const val DAY_SECONDS = 24 * 3600
+
+        /** Basal rates are edited and stored in 0.01 U/h, the finest step of any pump AAPS drives. */
+        const val BASAL_STEP = 0.01
     }
 }

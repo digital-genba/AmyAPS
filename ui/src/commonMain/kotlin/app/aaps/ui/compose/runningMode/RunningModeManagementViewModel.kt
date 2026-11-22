@@ -32,7 +32,6 @@ import app.aaps.core.keys.BooleanNonKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.clientcontrol.failText
-import app.aaps.ui.UiStrings
 import app.aaps.ui.compose.overview.chips.toIcon
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.ContributesIntoMap
@@ -73,8 +72,8 @@ class RunningModeManagementViewModel(
     private val dateUtil: DateUtil,
     private val config: Config,
     private val batchExecutor: BatchExecutor,
-    // Unqualified: @ApplicationScope is a javax qualifier and cannot appear in commonMain. The graph
-    // binds the same instance under both names.
+    // Unqualified: the graph binds the one application scope with and without @ApplicationScope
+    // (AppCoroutineBindings), so this is the same instance.
     private val appScope: CoroutineScope
 ) : ViewModel() {
 

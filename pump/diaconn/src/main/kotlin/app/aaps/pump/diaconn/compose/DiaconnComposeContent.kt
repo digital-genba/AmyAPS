@@ -15,6 +15,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.res.stringResource
+import androidx.navigationevent.NavigationEventInfo
+import androidx.navigationevent.compose.NavigationBackHandler
+import androidx.navigationevent.compose.rememberNavigationEventState
 import app.aaps.core.interfaces.pump.BlePreCheck
 import app.aaps.core.ui.compose.ComposablePluginContent
 import app.aaps.core.ui.compose.ToolbarConfig
@@ -108,6 +111,14 @@ class DiaconnComposeContent(
             )
         }
 
+        // System Back on a screen of the pump goes to the overview, as its arrow does. Without this handler the event
+        // reaches the app NavHost, which pops the whole pump page (found by the pump UI test). The wizard has its own.
+        NavigationBackHandler(
+            state = rememberNavigationEventState(NavigationEventInfo.None),
+            isBackEnabled = currentScreen != DiaconnScreen.OVERVIEW,
+            onBackCompleted = { currentScreen = DiaconnScreen.OVERVIEW }
+        )
+
         // Handle one-time events from overview
         LaunchedEffect(overviewViewModel) {
             overviewViewModel.events.collect { event ->
@@ -134,29 +145,35 @@ class DiaconnComposeContent(
             DiaconnScreen.PAIR_WIZARD  -> {
                 KeepScreenOnEffect()
 
-                BlePreCheckHost(
-                    blePreCheck = blePreCheck,
-                    onFailed = { currentScreen = DiaconnScreen.OVERVIEW }
-                )
+                // The wizard starts a BLE scan as soon as it is shown. Without the Bluetooth
+                // permissions that scan crashes the app, so show the wizard only after the check.
+                var bleReady by remember { mutableStateOf(false) }
+                if (!bleReady) {
+                    BlePreCheckHost(
+                        blePreCheck = blePreCheck,
+                        onReady = { bleReady = true },
+                        onFailed = { currentScreen = DiaconnScreen.OVERVIEW }
+                    )
+                } else {
+                    val wizardViewModel: DiaconnPairWizardViewModel = metroViewModel()
 
-                val wizardViewModel: DiaconnPairWizardViewModel = metroViewModel()
-
-                LaunchedEffect(wizardViewModel) {
-                    wizardViewModel.events.collect { event ->
-                        when (event) {
-                            is DiaconnPairWizardEvent.Finish -> currentScreen = DiaconnScreen.OVERVIEW
+                    LaunchedEffect(wizardViewModel) {
+                        wizardViewModel.events.collect { event ->
+                            when (event) {
+                                is DiaconnPairWizardEvent.Finish -> currentScreen = DiaconnScreen.OVERVIEW
+                            }
                         }
                     }
-                }
 
-                DiaconnPairWizardScreen(
-                    viewModel = wizardViewModel,
-                    onFinish = { currentScreen = DiaconnScreen.OVERVIEW },
-                    onCancel = {
-                        wizardViewModel.cancel()
-                        currentScreen = DiaconnScreen.OVERVIEW
-                    }
-                )
+                    DiaconnPairWizardScreen(
+                        viewModel = wizardViewModel,
+                        onFinish = { currentScreen = DiaconnScreen.OVERVIEW },
+                        onCancel = {
+                            wizardViewModel.cancel()
+                            currentScreen = DiaconnScreen.OVERVIEW
+                        }
+                    )
+                }
             }
 
             DiaconnScreen.HISTORY      -> {

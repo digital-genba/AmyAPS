@@ -39,6 +39,7 @@ import org.junit.jupiter.api.Test
 import org.mockito.Mock
 import org.mockito.MockitoAnnotations
 import org.mockito.kotlin.any
+import org.mockito.kotlin.anyVararg
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.whenever
 import app.aaps.core.ui.R as CoreUiR
@@ -119,6 +120,8 @@ internal class DiaconnOverviewViewModelTest {
         whenever(rh.gs(R.string.basal_step)).thenReturn("Basal step")
         whenever(rh.gs(R.string.bolus_step)).thenReturn("Bolus step")
         whenever(rh.gs(R.string.diaconn_g8_pump)).thenReturn("Diaconn G8")
+        // texts with values: battery, last connection, steps, firmware
+        whenever(rh.gs(any<Int>(), anyVararg())).thenReturn("formatted")
     }
 
     @AfterEach
@@ -158,5 +161,28 @@ internal class DiaconnOverviewViewModelTest {
         assertThat(batteryRow.level).isEqualTo(StatusLevel.WARNING)
         // configured -> management offers Unpair, not Pair
         assertThat(state.managementActions.map { it.label }).contains("Unpair")
+    }
+
+    // A paired pump whose first status read failed (a real G8 with its clock at 00:70): Refresh is the way to try again.
+    // History and the pump settings need a pump that is ready.
+    @Test
+    fun pairedButNotReady_offersRefreshOnly() {
+        whenever(activePump.isConfigured()).thenReturn(true)
+        whenever(activePump.isInitialized()).thenReturn(false)
+
+        val state = createViewModel().uiState.value
+
+        assertThat(state.primaryActions.filter { it.visible }.map { it.label }).containsExactly("Refresh")
+        assertThat(state.managementActions.filter { it.visible }.map { it.label }).containsExactly("Unpair")
+    }
+
+    @Test
+    fun notPaired_offersNoRefresh() {
+        whenever(activePump.isConfigured()).thenReturn(false)
+        whenever(activePump.isInitialized()).thenReturn(false)
+
+        val state = createViewModel().uiState.value
+
+        assertThat(state.primaryActions.filter { it.visible }).isEmpty()
     }
 }

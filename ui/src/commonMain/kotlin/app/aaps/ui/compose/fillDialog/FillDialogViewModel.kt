@@ -9,6 +9,7 @@ import androidx.lifecycle.viewmodel.CreationExtras
 import app.aaps.core.data.format.NumberFormat
 import app.aaps.core.data.model.ICfg
 import app.aaps.core.data.model.TE
+import app.aaps.core.data.model.labelOfInsulin
 import app.aaps.core.data.ue.Sources
 import app.aaps.core.data.ui.ConfirmationLine
 import app.aaps.core.data.ui.ConfirmationRole
@@ -16,8 +17,9 @@ import app.aaps.core.data.ui.confirmationLines
 import app.aaps.core.interfaces.InterfacesStrings
 import app.aaps.core.interfaces.bolus.BatchAction
 import app.aaps.core.interfaces.bolus.BatchExecutor
-import app.aaps.core.interfaces.bolus.WizardBolusExecutor
+import app.aaps.core.interfaces.bolus.MasterActionExecutor
 import app.aaps.core.interfaces.clientcontrol.ActionProgress
+import app.aaps.core.interfaces.clientcontrol.isNotDeliveryError
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.db.PersistenceLayer
@@ -27,6 +29,8 @@ import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.profile.ProfileFunction
+import app.aaps.core.interfaces.pump.PumpInsulin
+import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.interfaces.resources.TextResolver
 import app.aaps.core.interfaces.rx.bus.RxBus
 import app.aaps.core.interfaces.rx.events.EventShowDialog
@@ -37,11 +41,11 @@ import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.TextRef
-import app.aaps.core.objects.constraints.ConstraintObject
 import app.aaps.core.objects.extensions.observeChange
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.clientcontrol.failText
 import app.aaps.ui.UiStrings
+import app.aaps.ui.compose.EVENT_TIME_OFFSET_RANGE_MINUTES
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.Assisted
 import dev.zacsweers.metro.AssistedFactory
@@ -50,7 +54,6 @@ import dev.zacsweers.metro.ContributesIntoMap
 import dev.zacsweers.metro.binding
 import dev.zacsweers.metrox.viewmodel.ViewModelAssistedFactory
 import dev.zacsweers.metrox.viewmodel.ViewModelAssistedFactoryKey
-import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -63,6 +66,7 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 @Stable
 @AssistedInject
@@ -81,12 +85,13 @@ class FillDialogViewModel(
     private val ch: ConcentrationHelper,
     insulinManager: InsulinManager,
     private val profileFunction: ProfileFunction,
-    private val wizardBolusExecutor: WizardBolusExecutor,
+    private val masterActionExecutor: MasterActionExecutor,
     private val batchExecutor: BatchExecutor,
     private val rxBus: RxBus,
-    // Unqualified: @ApplicationScope is a javax qualifier and cannot appear in commonMain. The graph
-    // binds the same instance under both names.
-    private val appScope: CoroutineScope
+    // Unqualified: the graph binds the one application scope with and without @ApplicationScope
+    // (AppCoroutineBindings), so this is the same instance.
+    private val appScope: CoroutineScope,
+    commandQueue: CommandQueue
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(FillDialogUiState())
@@ -117,10 +122,12 @@ class FillDialogViewModel(
 
     init {
         val preselect = FillPreselect.entries[savedStateHandle.get<Int>("preselect") ?: 0]
-        val maxInsulin = constraintChecker.getMaxBolusAllowed().value()
-        val bolusStep = activePlugin.activePump.pumpDescription.bolusStep
+        // A prime is in pump units, so its max and its step are those of the pump itself.
+        val maxInsulin = constraintChecker.applyPrimingConstraints(PumpInsulin(Double.MAX_VALUE)).cU
+        val bolusStep = activePlugin.activePumpInternal.pumpDescription.bolusStep
 
         val availableInsulins = insulinManager.insulins.map { it.deepClone() }
+        val now = dateUtil.now()
 
         _uiState.update {
             FillDialogUiState(
@@ -128,8 +135,9 @@ class FillDialogViewModel(
                 siteChange = preselect == FillPreselect.SITE_CHANGE,
                 insulinCartridgeChange = preselect == FillPreselect.CARTRIDGE_CHANGE,
                 notes = "",
-                eventTime = dateUtil.now(),
-                eventTimeChanged = false,
+                eventTime = now,
+                eventTimeOriginal = now,
+                timeOffsetMinutes = 0,
                 maxInsulin = maxInsulin,
                 bolusStep = bolusStep,
                 presetButton1 = preferences.get(DoubleKey.ActionsFillButton1),
@@ -142,6 +150,7 @@ class FillDialogViewModel(
                 activeInsulinLabel = null,
                 pumpUnitsWarning = pumpUnitsWarningFor(availableInsulins.firstOrNull()),
                 showBolus = !config.AAPSCLIENT,
+                primeAvailable = activePlugin.activePump.pumpDescription.isRefillingCapable,
                 siteRotationEnabled = preferences.get(BooleanKey.SiteRotationManagePump),
                 showNotesFromPreferences = preferences.get(BooleanKey.OverviewShowNotesInDialogs),
                 simpleMode = preferences.get(BooleanKey.GeneralSimpleMode),
@@ -149,7 +158,7 @@ class FillDialogViewModel(
             )
         }
         viewModelScope.launch {
-            val activeLabel = profileFunction.getProfile()?.iCfg?.insulinLabel
+            val activeLabel = availableInsulins.labelOfInsulin(profileFunction.getProfile()?.iCfg)
             val currentInsulin = availableInsulins.find { it.insulinLabel == activeLabel } ?: availableInsulins.firstOrNull()
             _uiState.update {
                 it.copy(
@@ -161,6 +170,9 @@ class FillDialogViewModel(
         }
         loadLastSiteLocation()
         observeConcentrationEnabled()
+        commandQueue.smbBeingDelivered
+            .onEach { delivering -> _uiState.update { it.copy(smbBeingDelivered = delivering) } }
+            .launchIn(viewModelScope)
     }
 
     // The concentration-support flag is a synced preference (it can change from another device while
@@ -204,9 +216,7 @@ class FillDialogViewModel(
     }
 
     fun updateInsulin(value: Double) {
-        val constrained = constraintChecker.applyBolusConstraints(
-            ConstraintObject(value, aapsLogger)
-        ).value()
+        val constrained = constraintChecker.applyPrimingConstraints(PumpInsulin(value)).cU
         _uiState.update {
             it.copy(
                 insulin = value,
@@ -232,8 +242,25 @@ class FillDialogViewModel(
         _uiState.update { it.copy(notes = value) }
     }
 
+    /** The -/+ buttons: the time in minutes from when the dialog opened. */
+    fun updateTimeOffset(minutes: Int) {
+        val clamped = minutes.coerceIn(EVENT_TIME_OFFSET_RANGE_MINUTES)
+        _uiState.update {
+            it.copy(
+                timeOffsetMinutes = clamped,
+                eventTime = it.eventTimeOriginal + clamped.toLong() * 60 * 1000
+            )
+        }
+    }
+
+    /** The date and time pickers. The offset follows, so the -/+ buttons go on from the picked time. */
     fun updateEventTime(timeMillis: Long) {
-        _uiState.update { it.copy(eventTime = timeMillis, eventTimeChanged = true) }
+        _uiState.update {
+            it.copy(
+                eventTime = timeMillis,
+                timeOffsetMinutes = ((timeMillis - it.eventTimeOriginal) / (1000 * 60)).toInt()
+            )
+        }
     }
 
     private fun pumpUnitsWarningFor(iCfg: ICfg?): String? {
@@ -263,7 +290,7 @@ class FillDialogViewModel(
         val bolusStep = state.bolusStep
 
         return confirmationLines {
-            if (state.insulinAfterConstraints > 0) {
+            if (state.hasPrime) {
                 line(ConfirmationRole.WARNING, rh.gs(UiStrings.fill_warning))
                 line(ConfirmationRole.NORMAL, "")
                 val bolusValue =
@@ -327,7 +354,7 @@ class FillDialogViewModel(
         }
 
         val doProfileSwitch = state.insulinChanged
-        val hasPrimeBolus = state.insulinAfterConstraints > 0
+        val hasPrimeBolus = state.hasPrime
 
         // All work runs on appScope, not viewModelScope: the dialog navigates back the moment
         // confirm is tapped, which cancels viewModelScope. The prime bolus is also launched
@@ -337,7 +364,7 @@ class FillDialogViewModel(
             // Prime now rides the shared executor (one audited path): it logs the user entry, sets the
             // PRIMING treatment + notes, and the profile switch is sequenced on prime success.
             appScope.launch {
-                wizardBolusExecutor.deliverFillBolus(
+                masterActionExecutor.deliverFillBolus(
                     amount = state.insulinAfterConstraints,
                     notes = notes,
                     source = Sources.FillDialog,
@@ -354,85 +381,68 @@ class FillDialogViewModel(
                         // After successful prime, do profile switch if insulin changed
                         if (doProfileSwitch) {
                             appScope.launch {
-                                activateInsulin(state.selectedInsulin!!)
+                                record(listOf(BatchAction.InsulinActivate(state.selectedInsulin!!)))
                             }
                         }
                     }
                 )
             }
-        } else {
-            // No prime — do profile switch immediately if insulin changed
-            if (doProfileSwitch) {
-                appScope.launch {
-                    activateInsulin(state.selectedInsulin!!)
-                }
-            }
         }
 
-        // Site change → routed through the master via the batch channel (one audited writer), like the prime +
-        // insulin activation above. The master persists CANNULA_CHANGE and re-derives the SITE_CHANGE audit category.
-        if (state.siteChange) {
-            val location = state.siteLocation.takeIf { it != TE.Location.NONE }
-            val arrow = state.siteArrow.takeIf { it != TE.Arrow.NONE }
-            appScope.launch {
-                recordTherapyEvent(
-                    BatchAction.TherapyEvent(
-                        teType = TE.Type.CANNULA_CHANGE, timestamp = eventTime, note = notes.ifEmpty { null },
-                        location = location, arrow = arrow, source = Sources.FillDialog
-                    )
+        // Everything else goes to the master in ONE batch (#5416). On a client each batch is a round trip, and a
+        // client runs one round trip at a time: a second one started meanwhile is refused at once as Busy, so with
+        // one batch per item only one of them was recorded. The master applies the insulin switch first, then the
+        // events. Both need the same client role, so one batch is never refused for the role of only one of them.
+        val actions = buildList {
+            // Site change: the master persists CANNULA_CHANGE and re-derives the SITE_CHANGE audit category
+            if (state.siteChange) add(
+                BatchAction.TherapyEvent(
+                    teType = TE.Type.CANNULA_CHANGE, timestamp = eventTime, note = notes.ifEmpty { null },
+                    location = state.siteLocation.takeIf { it != TE.Location.NONE }, arrow = state.siteArrow.takeIf { it != TE.Arrow.NONE },
+                    source = Sources.FillDialog
                 )
-            }
-        }
-
-        // Insulin cartridge change (offset +1s to avoid the site-change timestamp collision the master dedups on).
-        if (state.insulinCartridgeChange) {
-            appScope.launch {
-                recordTherapyEvent(
-                    BatchAction.TherapyEvent(
-                        teType = TE.Type.INSULIN_CHANGE, timestamp = eventTime + 1000, note = notes.ifEmpty { null },
-                        source = Sources.FillDialog
-                    )
+            )
+            // Insulin cartridge change (offset +1s to avoid the site-change timestamp collision the master dedups on)
+            if (state.insulinCartridgeChange) add(
+                BatchAction.TherapyEvent(
+                    teType = TE.Type.INSULIN_CHANGE, timestamp = eventTime + 1000, note = notes.ifEmpty { null },
+                    source = Sources.FillDialog
                 )
-            }
+            )
+            // With a prime the switch waits for it (above). A client has no prime, so there it is always here.
+            if (doProfileSwitch && !hasPrimeBolus) add(BatchAction.InsulinActivate(state.selectedInsulin!!))
         }
-    }
-
-    /** Record a careportal therapy event through the master-controlled batch channel (no confirmation UI — prepare→commit). */
-    private suspend fun recordTherapyEvent(action: BatchAction.TherapyEvent) {
-        val label = rh.gs(CoreUiStrings.careportal)
-        when (val prepared = batchExecutor.prepare(listOf(action), action.source, label)) {
-            is ActionProgress.Prepared -> {
-                val committed = batchExecutor.commit(prepared.id, action.source, label)
-                if (committed is ActionProgress.Rejected)
-                    aapsLogger.warn(LTag.UI, "Fill therapy event commit rejected: ${committed.reason} ${committed.detail}")
-            }
-
-            is ActionProgress.Rejected -> aapsLogger.warn(LTag.UI, "Fill therapy event prepare rejected: ${prepared.reason} ${prepared.detail}")
-            else                       -> Unit
-        }
+        if (actions.isNotEmpty()) appScope.launch { record(actions) }
     }
 
     /**
-     * Non-interactive insulin activation for the fill flow (a chained profile switch after a prime) — relays through
-     * the master-controlled [BatchExecutor] like everything else, but with NO confirmation UI of its own: prepare then
-     * commit back-to-back. Master → local; client → signed round-trip.
-     *
-     * The fill confirmation already told the user "profile switch will be applied", so every outcome other than
-     * success has to reach them: silently dropping it leaves them believing their insulin changed when it did not,
-     * and every later IOB calculation is then scaled by the wrong peak/DIA/concentration. Hence one funnel through
-     * [reportInsulinActivation] rather than a `when` with a silent `else`.
+     * Records [actions] through the master-controlled batch channel, with no confirmation UI of its own: prepare
+     * then commit back-to-back. Master → local; client → signed round-trip.
      */
-    private suspend fun activateInsulin(iCfg: ICfg) {
-        val label = rh.gs(CoreUiStrings.activate_insulin)
-        val outcome = when (val prepared = batchExecutor.prepare(listOf(BatchAction.InsulinActivate(iCfg)), Sources.FillDialog, label)) {
+    private suspend fun record(actions: List<BatchAction>) {
+        val switchesInsulin = actions.any { it is BatchAction.InsulinActivate }
+        val label = rh.gs(if (switchesInsulin) CoreUiStrings.activate_insulin else CoreUiStrings.careportal)
+        val outcome = when (val prepared = batchExecutor.prepare(actions, Sources.FillDialog, label)) {
             is ActionProgress.Prepared -> batchExecutor.commit(prepared.id, Sources.FillDialog, label)
             else                       -> prepared
         }
-        reportInsulinActivation(outcome)
+        if (outcome is ActionProgress.Applied) return
+        aapsLogger.warn(LTag.UI, "Fill records not applied: $outcome")
+        // A client's round-trip modal has shown the master's answer already, and the screens do not repeat it. Only
+        // what comes before anything is sent (not reachable, control disabled, cancelled) has no modal.
+        val shownByModal = outcome is ActionProgress.Unconfirmed || (outcome is ActionProgress.Rejected && !outcome.reason.isNotDeliveryError())
+        if (config.AAPSCLIENT && shownByModal) return
+        // The events alone are only logged, as in the Care dialog. The switch must be reported: the confirmation
+        // promised it, and every later IOB depends on the insulin in use.
+        if (switchesInsulin) reportInsulinActivation(outcome)
     }
 
     /**
      * Turn the terminal [outcome] of the promised insulin switch into user-visible feedback.
+     *
+     * The fill confirmation already told the user "profile switch will be applied", so every outcome other than
+     * success has to reach them: silently dropping it leaves them believing their insulin changed when it did not,
+     * and every later IOB calculation is then scaled by the wrong peak/DIA/concentration.
      *
      * [ActionProgress.Unconfirmed] is deliberately NOT reported as a failure: the command was sent and may still
      * land via sync-back, so it is reported as unknown and the user is pointed at their active profile. Claiming
@@ -441,15 +451,12 @@ class FillDialogViewModel(
     private fun reportInsulinActivation(outcome: ActionProgress) {
         when (outcome) {
             is ActionProgress.Applied     -> Unit
-            is ActionProgress.Unconfirmed -> {
-                aapsLogger.warn(LTag.UI, "Fill insulin activation unconfirmed: ${outcome.reason} ${outcome.detail}")
+            is ActionProgress.Unconfirmed ->
                 reportAfterClose(CoreUiStrings.activate_insulin, rh.gs(CoreUiStrings.insulin_activation_unconfirmed))
-            }
 
             else                          -> {
                 // Rejected, or a non-terminal value that can never become one here (nothing further awaits it).
                 val detail = (outcome as? ActionProgress.Rejected)?.let { rh.gs(it.reason.failText()) }
-                aapsLogger.warn(LTag.UI, "Fill insulin activation failed: $outcome")
                 reportAfterClose(
                     CoreUiStrings.activate_insulin,
                     detail?.let { rh.gs(CoreUiStrings.insulin_activation_failed_reason, it) }

@@ -30,11 +30,51 @@ class CmdLargeBasalSetTest : TestBaseWithProfile() {
         assertEquals(160, cmd.step)
     }
 
+    /** A real pump got 95 steps for a 0.6 U SMB on 2026-11-08 and logged it as 0.594 U. */
+    @Test
+    fun `an amount on the 0_05 grid keeps its last step`() {
+        assertEquals(96, CmdLargeBasalSet(0.6, aapsLogger, preferences, equilManager).step)
+        assertEquals(24, CmdLargeBasalSet(0.15, aapsLogger, preferences, equilManager).step)
+        assertEquals(24, CmdExtendedBolusSet(0.15, 30, false, aapsLogger, preferences, equilManager).step)
+    }
+
     @Test
     fun `constructor should calculate stepTime from insulin`() {
         val cmd = CmdLargeBasalSet(1.0, aapsLogger, preferences, equilManager)
         // stepTime = (1.0 / 0.05 * 2) = 40
         assertEquals(40, cmd.stepTime)
+    }
+
+    @Test
+    fun `stepTime follows the chosen bolus speed (#5142)`() {
+        // Seconds per unit: 40 = 1.5 U/min, 20 = 3, 10 = 6, 5 = 12 U/min. Measured on a real pump.
+        assertEquals(480, CmdLargeBasalSet(12.0, aapsLogger, preferences, equilManager, 40).stepTime)
+        assertEquals(20, CmdLargeBasalSet(1.0, aapsLogger, preferences, equilManager, 20).stepTime)
+        assertEquals(10, CmdLargeBasalSet(1.0, aapsLogger, preferences, equilManager, 10).stepTime)
+        assertEquals(5, CmdLargeBasalSet(1.0, aapsLogger, preferences, equilManager, 5).stepTime)
+        // The amount does not depend on the speed.
+        assertEquals(160, CmdLargeBasalSet(1.0, aapsLogger, preferences, equilManager, 5).step)
+    }
+
+    @Test
+    fun `a small fast bolus gets at least 1 second`() {
+        // 0.05 U at 12 U/min would be 0.25 s, sent as 0 s.
+        assertEquals(1, CmdLargeBasalSet(0.05, aapsLogger, preferences, equilManager, 5).stepTime)
+        assertEquals(2, CmdLargeBasalSet(0.05, aapsLogger, preferences, equilManager, 40).stepTime)
+    }
+
+    /** Found by the pump scenario tests: rounded to the nearest second, a bolus went faster than the speed setting. */
+    @Test
+    fun `a bolus is never faster than the speed setting`() {
+        // 0.25 U at 12 U/min is 1.25 s: 1 s would be 15 U/min.
+        assertEquals(2, CmdLargeBasalSet(0.25, aapsLogger, preferences, equilManager, 5).stepTime)
+        assertEquals(2, CmdLargeBasalSet(0.3, aapsLogger, preferences, equilManager, 5).stepTime)
+        assertEquals(3, CmdLargeBasalSet(0.45, aapsLogger, preferences, equilManager, 5).stepTime)
+        for (tenths in 1..200) {
+            val insulin = tenths / 20.0
+            val stepTime = CmdLargeBasalSet(insulin, aapsLogger, preferences, equilManager, 5).stepTime
+            assertTrue(insulin / stepTime * 60 <= 12.0 + 1e-9, "$insulin U in $stepTime s")
+        }
     }
 
     @Test

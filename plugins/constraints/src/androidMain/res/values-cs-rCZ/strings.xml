@@ -9,7 +9,7 @@
     <string name="application_expired">Platnost aplikace vypršela</string>
     <string name="running_invalid_version">Zjistili jsme, že používáte neplatnou verzi, smyčka zakázána!</string>
     <string name="versionavailable">Verze %1$s je k dispozici</string>
-    <string name="version_expire">Platnost verze %1$s vyprší dne %2$s a přepne se do režimu Ochrana před nízkou glykémií</string>
+    <string name="version_expire">Platnost verze %1$s vyprší dne %2$s a přepne se do režimu Ochrana před nízkou glykémií (LGS)</string>
     <!-- Signature verifier -->
     <!-- BG Quality -->
     <string name="recalculated_data_used">Použita přepočítaná data</string>
@@ -24,8 +24,8 @@
     <string name="pumpisnottempbasalcapable">Pumpa nepodporuje dočasné bazály</string>
     <string name="closed_loop_disabled_on_dev_branch">Běží DEV verze. Uzavřená smyčka je zakázána.</string>
     <string name="closed_loop_disabled_with_eb">Uzavřená smyčka je zastavena kvůli běžícímu prodlouženému bolusu</string>
-    <string name="smbalwaysdisabled">\"SMB vždy\" a \"po jídle\" zakázáno protože zdroj glykémie nepodporuje rozšířené filtrování</string>
-    <string name="smbnotallowedinopenloopmode">SBM není povoleno v otevřené smyčce</string>
+    <string name="smbalwaysdisabled">„SMB vždy“ a „SMB po sacharidech“ jsou zakázány, protože aktivní zdroj glykémie nepodporuje rozšířené filtrování</string>
+    <string name="smbnotallowedinopenloopmode">SMB není povoleno v otevřené smyčce</string>
     <string name="maxvalueinpreferences">maximální hodnota v nastavení</string>
     <string name="hardlimit">pevný limit</string>
     <!-- Objectives -->

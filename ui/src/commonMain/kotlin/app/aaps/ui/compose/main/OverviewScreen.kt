@@ -22,9 +22,10 @@ import app.aaps.core.interfaces.pump.BolusProgressData
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.interfaces.ui.UiInteraction
 import app.aaps.core.ui.compose.AapsTheme
-import app.aaps.core.ui.compose.dialogs.OkDialog
 import app.aaps.core.ui.compose.navigation.NavigationRequest
 import app.aaps.core.ui.compose.pump.PumpCommunicationStatus
+import app.aaps.core.ui.compose.stringResource
+import app.aaps.ui.UiStrings
 import app.aaps.ui.compose.loopSheet.LoopActionViewModel
 import app.aaps.ui.compose.maintenance.ImportSource
 import app.aaps.ui.compose.maintenance.MaintenanceViewModel
@@ -58,11 +59,11 @@ import app.aaps.ui.search.SearchViewModel
  * ## What is still per platform
  *
  * The callbacks at the end, and only those: opening a browser, opening a directory picker, bringing
- * the window to the front, recreating the activity, and quitting after a failed authorization. Each
- * is a sentence of platform code, and each is passed in rather than guessed at.
+ * the window to the front and recreating the activity. Each is a sentence of platform code, and each
+ * is passed in rather than guessed at.
  *
- * [appName] and [authorizationFailedMessage] are parameters because they live in the app module's
- * own resources - the name differs per flavour - and this module cannot see them.
+ * [appName] is a parameter because it lives in the app module's own resources - the name differs per
+ * flavour - and this module cannot see it.
  */
 @Composable
 @Suppress("LongParameterList", "LongMethod")
@@ -93,7 +94,6 @@ fun OverviewScreen(
     pumpCommunicationStatus: PumpCommunicationStatus,
     // Text the app module owns
     appName: String,
-    authorizationFailedMessage: String,
     // Navigation, which the platform routes because it holds the controller
     onNavigate: (NavigationRequest) -> Unit,
     onSearchResultClick: (SearchIndexEntry) -> Unit,
@@ -105,7 +105,6 @@ fun OverviewScreen(
     onLaunchBrowser: (String) -> Unit,
     onBringToForeground: () -> Unit,
     onRecreateActivity: () -> Unit,
-    onAuthorizationFailed: () -> Unit,
     // Notification sheet, opened from outside when something important arrives
     autoShowNotificationSheet: Boolean,
     onAutoShowConsumed: () -> Unit
@@ -138,6 +137,10 @@ fun OverviewScreen(
         objectivesDone < objectivesTotal && objectivesPlugin.isEnabled() && objectivesPlugin.hasComposeContent()
     val objectivesSetupPlugin = if (showObjectivesSetup) objectivesPlugin else null
     val objectivesProgressText = if (showObjectivesSetup) "$objectivesDone/$objectivesTotal" else null
+    // The same progress in words. The badge glyph above is unreadable to a screen reader, because
+    // Material3 clears the semantics of a navigation item's whole icon slot when it has a label.
+    val objectivesProgressDescription =
+        if (showObjectivesSetup) stringResource(UiStrings.a11y_objectives_progress, objectivesDone, objectivesTotal) else null
 
     // BG source shortcut: shown when BG quality check reports FLAT or DOUBLED
     val bgQualityState by bgQualityCheck.stateFlow.collectAsStateWithLifecycle()
@@ -166,18 +169,6 @@ fun OverviewScreen(
         },
     )
 
-    // Authorization failed dialog
-    if (state.showAuthFailedDialog) {
-        OkDialog(
-            title = "",
-            message = authorizationFailedMessage,
-            onDismiss = {
-                mainViewModel.setShowAuthFailedDialog(false)
-                onAuthorizationFailed()
-            }
-        )
-    }
-
     MainScreen(
         mainViewModel = mainViewModel,
         uiState = state,
@@ -197,7 +188,13 @@ fun OverviewScreen(
             if (active) searchViewModel.onSearchModeActivated()
             else searchViewModel.onSearchModeDeactivated()
         },
-        onSearchResultClick = onSearchResultClick,
+        onSearchResultClick = { entry ->
+            // A search that led to a result is worth remembering; opening the result stays with the activity.
+            searchViewModel.recordCurrentQuery()
+            onSearchResultClick(entry)
+        },
+        onSearchHistoryClick = { searchViewModel.onQueryChanged(it) },
+        onSearchHistoryRemove = { searchViewModel.removeFromHistory(it) },
         onSearchPluginToggle = { plugin -> searchViewModel.togglePlugin(plugin) },
         onConfirmSearchPluginSwitch = { searchViewModel.confirmPluginSwitch() },
         onDismissSearchPluginSwitch = { searchViewModel.dismissPluginSwitch() },
@@ -229,6 +226,7 @@ fun OverviewScreen(
         bgQualityBadgeDescription = bgQualityBadgeDescription,
         objectivesSetupPlugin = objectivesSetupPlugin,
         objectivesProgressText = objectivesProgressText,
+        objectivesProgressDescription = objectivesProgressDescription,
         permissionsMissing = permState.hasAnyMissing,
         onPermissionsClick = { permissionsViewModel.showSheet() },
         // Toolbar

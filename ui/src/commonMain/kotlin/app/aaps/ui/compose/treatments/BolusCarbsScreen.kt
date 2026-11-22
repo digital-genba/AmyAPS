@@ -29,10 +29,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -48,14 +47,15 @@ import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.compose.AapsCard
 import app.aaps.core.ui.compose.AapsTheme
 import app.aaps.core.ui.compose.LocalDateUtil
+import app.aaps.core.ui.compose.StyledArg
 import app.aaps.core.ui.compose.ToolbarConfig
-import app.aaps.core.ui.compose.dialogs.OkCancelDialog
+import app.aaps.core.ui.compose.dialogs.RecordRemovalDialog
 import app.aaps.core.ui.compose.icons.Ns
 import app.aaps.core.ui.compose.icons.Pump
 import app.aaps.core.ui.compose.navigation.color
 import app.aaps.core.ui.compose.navigation.icon
 import app.aaps.core.ui.compose.stringResource
-import app.aaps.ui.UiStrings
+import app.aaps.core.ui.compose.styledStringResource
 import app.aaps.ui.compose.components.ContentContainer
 import app.aaps.ui.compose.treatments.viewmodels.BolusCarbsViewModel
 
@@ -76,8 +76,6 @@ fun BolusCarbsScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     // Dialog state
-    var showDeleteDialog by remember { mutableStateOf(false) }
-    var deleteDialogMessage by remember { mutableStateOf("") }
     var showInfoBcr by remember { mutableStateOf<BCR?>(null) }
 
     val profile by produceState<Profile?>(null, uiState.mealLinks) { value = viewModel.getProfile() }
@@ -87,12 +85,7 @@ fun BolusCarbsScreen(
         setToolbarConfig(
             viewModel.getToolbarConfig(
                 onNavigateBack = onNavigateBack,
-                onDeleteClick = {
-                    if (uiState.selectedItems.isNotEmpty()) {
-                        deleteDialogMessage = viewModel.getDeleteConfirmationMessage()
-                        showDeleteDialog = true
-                    }
-                }
+                onDeleteClick = { viewModel.requestDelete() }
             )
         )
     }
@@ -106,18 +99,8 @@ fun BolusCarbsScreen(
         )
     }
 
-    // Delete confirmation dialog
-    if (showDeleteDialog) {
-        OkCancelDialog(
-            title = stringResource(CoreUiStrings.removerecord),
-            message = deleteDialogMessage,
-            onConfirm = {
-                viewModel.deleteSelected()
-                showDeleteDialog = false
-            },
-            onDismiss = { showDeleteDialog = false }
-        )
-    }
+    // Delete confirmation, written by the master
+    RecordRemovalDialog(removal = viewModel.removal, onApplied = { viewModel.onRemoved() })
 
     AapsTheme {
         Box(modifier = Modifier.fillMaxSize()) {
@@ -178,7 +161,7 @@ data class MealLink(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MealLinkItem(
+internal fun MealLinkItem(
     mealLink: MealLink,
     isRemovingMode: Boolean,
     isSelected: Boolean,
@@ -195,7 +178,9 @@ private fun MealLinkItem(
             .padding(horizontal = 2.dp)
             .combinedClickable(
                 onClick = onClick,
-                onLongClick = onLongPress
+                onLongClick = onLongPress,
+                // Long press is the only way into remove mode; TalkBack says "double-tap and hold to Remove".
+                onLongClickLabel = stringResource(CoreUiStrings.remove)
             ),
         selected = isSelected
     ) {
@@ -261,68 +246,62 @@ private fun MealLinkItem(
                             .padding(horizontal = 8.dp, vertical = 3.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = dateUtil.timeString(bolus.timestamp),
-                            fontSize = 14.sp,
-                            color = if (bolus.timestamp > dateUtil.now()) Color(AapsTheme.generalColors.futureRecord.value) else MaterialTheme.colorScheme.onSurface
-                        )
+                        // Only this column has a weight, so it gets the width the type and the icons leave. Before,
+                        // a long insulin label took the width first and the icons got none (#5481).
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = dateUtil.timeString(bolus.timestamp),
+                                    fontSize = 14.sp,
+                                    color = if (bolus.timestamp > dateUtil.now()) Color(AapsTheme.generalColors.futureRecord.value) else MaterialTheme.colorScheme.onSurface
+                                )
 
-                        // Bolus amount with IOB
-                        profile?.let { _ ->
-                            val iob = bolus.iobCalc(dateUtil.now())
-                            val bolusText = if (iob.iobContrib > 0.01) {
-                                buildAnnotatedString {
-                                    withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) {
-                                        append(stringResource(InterfacesStrings.format_insulin_units, bolus.amount))
-                                        append(" ")
-                                    }
-                                    withStyle(
-                                        style = SpanStyle(
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color(AapsTheme.generalColors.activeInsulinText.value)
+                                // Bolus amount with IOB
+                                profile?.let { _ ->
+                                    val iob = bolus.iobCalc(dateUtil.now())
+                                    val bolusText = if (iob.iobContrib > 0.01) {
+                                        styledStringResource(
+                                            CoreUiStrings.value_with_unit,
+                                            StyledArg(stringResource(InterfacesStrings.format_insulin_units, bolus.amount)),
+                                            StyledArg(
+                                                stringResource(CoreUiStrings.value_in_parentheses, stringResource(InterfacesStrings.format_insulin_units, iob.iobContrib)),
+                                                SpanStyle(color = Color(AapsTheme.generalColors.activeInsulinText.value))
+                                            )
                                         )
-                                    ) {
-                                        append("(")
-                                        append(stringResource(InterfacesStrings.format_insulin_units, iob.iobContrib))
-                                        append(")")
+                                    } else {
+                                        AnnotatedString(stringResource(InterfacesStrings.format_insulin_units, bolus.amount))
                                     }
-                                }
-                            } else {
-                                buildAnnotatedString {
-                                    withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) {
-                                        append(stringResource(InterfacesStrings.format_insulin_units, bolus.amount))
-                                    }
+
+                                    Text(
+                                        text = bolusText,
+                                        modifier = Modifier.padding(start = 10.dp),
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                } ?: run {
+                                    Text(
+                                        text = stringResource(InterfacesStrings.format_insulin_units, bolus.amount),
+                                        modifier = Modifier.padding(start = 10.dp),
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                 }
                             }
 
-                            Text(
-                                text = bolusText,
-                                modifier = Modifier.padding(start = 10.dp),
-                                fontSize = 14.sp
-                            )
-                        } ?: run {
-                            Text(
-                                text = stringResource(InterfacesStrings.format_insulin_units, bolus.amount),
-                                modifier = Modifier.padding(start = 10.dp),
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                            // Insulin label (when different from active). The running profile owns the
+                            // authoritative iCfg; with no profile there is nothing to compare against, so
+                            // the label is shown rather than suppressed against a guessed "active".
+                            // On its own line and never cut short: its end is the concentration, the part
+                            // that matters after an insulin change.
+                            val activeLabel = profile?.iCfg?.insulinLabel
+                            if (bolus.iCfg.insulinLabel != activeLabel) {
+                                Text(
+                                    text = bolus.iCfg.insulinLabel,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
-
-                        // Insulin label (when different from active). The running profile owns the
-                        // authoritative iCfg; with no profile there is nothing to compare against, so
-                        // the label is shown rather than suppressed against a guessed "active".
-                        val activeLabel = profile?.iCfg?.insulinLabel
-                        if (bolus.iCfg.insulinLabel != activeLabel) {
-                            Text(
-                                text = bolus.iCfg.insulinLabel,
-                                modifier = Modifier.padding(start = 4.dp),
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        Box(modifier = Modifier.weight(1f))
 
                         // Bolus type — pre-migration text label (the legacy view showed "SMB" / "Meal Bolus" /
                         // "Prime/Fill" here; a carbs icon on a normal/correction bolus was misleading).
@@ -332,8 +311,10 @@ private fun MealLinkItem(
                                 BS.Type.NORMAL  -> stringResource(CoreUiStrings.careportal_mealbolus)
                                 BS.Type.PRIMING -> stringResource(CoreUiStrings.prime_fill)
                             },
+                            modifier = Modifier.padding(start = 8.dp),
                             fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
                         )
 
                         if (bolus.ids.nightscoutId != null) {
@@ -387,42 +368,44 @@ private fun MealLinkItem(
                             .padding(horizontal = 8.dp, vertical = 3.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = dateUtil.timeString(carbs.timestamp),
-                            fontSize = 14.sp
-                        )
+                        // Only this column has a weight, so long notes can not push the icons out of the row (#5481)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = dateUtil.timeString(carbs.timestamp),
+                                    fontSize = 14.sp
+                                )
 
-                        Text(
-                            text = stringResource(InterfacesStrings.carbs) + ":",
-                            modifier = Modifier.padding(start = 8.dp, end = 4.dp),
-                            fontSize = 14.sp
-                        )
+                                Text(
+                                    text = styledStringResource(
+                                        InterfacesStrings.confirmation_line,
+                                        StyledArg(stringResource(InterfacesStrings.carbs)),
+                                        StyledArg(stringResource(InterfacesStrings.format_carbs, carbs.amount.toInt()), SpanStyle(fontWeight = FontWeight.Bold))
+                                    ),
+                                    modifier = Modifier.padding(start = 8.dp),
+                                    fontSize = 14.sp
+                                )
 
-                        Text(
-                            text = stringResource(InterfacesStrings.format_carbs, carbs.amount.toInt()),
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                                if (carbs.duration > 0) {
+                                    Text(
+                                        text = stringResource(CoreUiStrings.format_mins, T.msecs(carbs.duration).mins().toInt()),
+                                        modifier = Modifier.padding(start = 8.dp),
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
 
-                        if (carbs.duration > 0) {
-                            Text(
-                                text = stringResource(CoreUiStrings.format_mins, T.msecs(carbs.duration).mins().toInt()),
-                                modifier = Modifier.padding(start = 8.dp),
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                            // On their own line, indented like the notes of a bolus
+                            carbs.notes?.takeIf { it.isNotEmpty() }?.let { notes ->
+                                Text(
+                                    text = notes,
+                                    modifier = Modifier.padding(start = 4.dp),
+                                    fontSize = 12.sp,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
                         }
-
-                        carbs.notes?.takeIf { it.isNotEmpty() }?.let { notes ->
-                            Text(
-                                text = notes,
-                                modifier = Modifier.padding(start = 8.dp),
-                                fontSize = 12.sp,
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-
-                        Box(modifier = Modifier.weight(1f))
 
                         if (carbs.ids.nightscoutId != null) {
                             Icon(
@@ -466,7 +449,7 @@ private fun MealLinkItem(
                 }
             }
 
-            // Bolus notes (carbs notes are shown inline)
+            // Bolus notes (the carbs row shows its own notes)
             mealLink.bolus?.let { bolus ->
                 bolus.notes?.takeIf { it.isNotEmpty() && mealLink.carbs == null }?.let { notes ->
                     Text(

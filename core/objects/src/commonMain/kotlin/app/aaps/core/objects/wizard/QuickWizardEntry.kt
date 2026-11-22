@@ -3,6 +3,7 @@ package app.aaps.core.objects.wizard
 import app.aaps.annotations.OpenForTesting
 import app.aaps.core.data.iob.InMemoryGlucoseValue
 import app.aaps.core.data.model.RM
+import app.aaps.core.data.time.SystemTimeZone
 import app.aaps.core.data.ue.Sources
 import app.aaps.core.interfaces.aps.Loop
 import app.aaps.core.interfaces.db.PersistenceLayer
@@ -12,10 +13,10 @@ import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.profile.Profile
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.utils.DateUtil
+import app.aaps.core.interfaces.utils.MidnightTime
 import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.objects.extensions.valueToUnits
-import app.aaps.core.utils.MidnightUtils
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
@@ -48,7 +49,7 @@ class QuickWizardEntry(
     @OpenForTesting
     class Time {
 
-        fun secondsFromMidnight(): Int = MidnightUtils.secondsFromMidnight()
+        fun secondsFromMidnight(): Int = MidnightTime.secondsFromMidnight(SystemTimeZone.current())
 
     }
 
@@ -196,6 +197,12 @@ class QuickWizardEntry(
     fun useEcarbs(): Int = data.useEcarbs
 
     fun carbs2(): Int = data.carbs2
+
+    /**
+     * The extended-carbs amount this preset really delivers: [carbs2] when eCarbs are switched on, 0 when they
+     * are off. Every caller needs the switch together with the amount, so the two stay in one place.
+     */
+    fun eCarbsGrams(): Int = if (useEcarbs() == ALWAYS) carbs2() else 0
 
     fun time(): Int = data.time
 

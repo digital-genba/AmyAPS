@@ -11,6 +11,7 @@ import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.plugin.PluginBase
 import app.aaps.core.interfaces.profile.EffectiveProfile
+import app.aaps.core.interfaces.profile.Profile.ProfileValue
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.pump.DetailedBolusInfo
 import app.aaps.core.interfaces.pump.Pump
@@ -22,15 +23,15 @@ import app.aaps.core.interfaces.pump.PumpSync
 import app.aaps.core.interfaces.pump.PumpWithConcentration
 import app.aaps.core.interfaces.pump.actions.CustomAction
 import app.aaps.core.interfaces.pump.actions.CustomActionType
-import app.aaps.core.interfaces.pump.defs.determineCorrectBolusStepSize
 import app.aaps.core.interfaces.queue.CustomCommand
 import app.aaps.core.interfaces.utils.Round
 import app.aaps.core.objects.constraints.ConstraintObject
+import app.aaps.implementation.ImplementationStrings
+import dev.zacsweers.metro.AppScope
+import dev.zacsweers.metro.ContributesBinding
+import dev.zacsweers.metro.Inject
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.JsonObject
-import dev.zacsweers.metro.AppScope
-import dev.zacsweers.metro.Inject
-import dev.zacsweers.metro.ContributesBinding
 
 // Deliberately NOT @SingleIn: the @Binds this replaces had no scope, so every injection site got its
 // own. Scoping it now would be a silent behaviour change in a class that talks to the pump.
@@ -74,7 +75,7 @@ class PumpWithConcentrationImpl(
     override val lastDataTime: StateFlow<Long> get() = activePumpInternal.lastDataTime
     override val lastBolusTime: StateFlow<Long?> get() = activePumpInternal.lastBolusTime
     override val lastBolusAmount: StateFlow<PumpInsulin?> get() = activePumpInternal.lastBolusAmount
-    override val reservoirLevel: StateFlow<PumpInsulin> get() = activePumpInternal.reservoirLevel
+    override val reservoirLevel: StateFlow<PumpInsulin?> get() = activePumpInternal.reservoirLevel
     override val batteryLevel: StateFlow<Int?> get() = activePumpInternal.batteryLevel
     override suspend fun cancelTempBasal(enforceNew: Boolean): PumpEnactResult = activePumpInternal.cancelTempBasal(enforceNew)
     override suspend fun cancelExtendedBolus(): PumpEnactResult = activePumpInternal.cancelExtendedBolus()
@@ -123,11 +124,27 @@ class PumpWithConcentrationImpl(
     override fun isThisProfileSet(profile: PumpProfile): Boolean = error("Must no be called directly. Use: isThisProfileSet(profile: EffectiveProfile)")
     override fun isThisProfileSet(profile: EffectiveProfile): Boolean = activePumpInternal.isThisProfileSet(profile.toPump())
 
+    /**
+     * Still in pump units. The caller converts it with the concentration of the profile it set: the running one,
+     * used everywhere else in this class, is still the old profile at that moment.
+     */
+    override fun deliveredBasal(): List<ProfileValue>? = activePumpInternal.deliveredBasal()
+
     override val baseBasalRate: PumpRate get() = activePumpInternal.baseBasalRate
+
+    /**
+     * The answer to a dose while the pump has not written the profile of a new insulin concentration
+     * ([ProfileFunction.isConcentrationChangePending]). Stopping a running TBR or extended bolus stays possible.
+     */
+    private fun refusedConcentrationChangePending(): PumpEnactResult {
+        aapsLogger.error(LTag.PUMP, "Dose refused: the profile with the new insulin concentration is not written to the pump yet")
+        return pumpEnactResultProvider().success(false).enacted(false).comment(ImplementationStrings.concentration_change_pending)
+    }
 
     override suspend fun deliverTreatment(detailedBolusInfo: DetailedBolusInfo): PumpEnactResult {
         // Priming is in pump units already: it goes to the pump as it is, and its result comes back as it is.
         if (detailedBolusInfo.bolusType == BS.Type.PRIMING) return activePumpInternal.deliverTreatment(detailedBolusInfo)
+        if (detailedBolusInfo.insulin > 0.0 && profileFunction.isConcentrationChangePending()) return refusedConcentrationChangePending()
         // Read once, so the way back uses the same factor as the way in.
         val concentration = concentration
         // IU -> cU. The max limit is applied in IU by ConstraintsChecker (it folds the pump's own cU cap
@@ -137,7 +154,7 @@ class PumpWithConcentrationImpl(
         val requestedIu = detailedBolusInfo.insulin
         val converted = requestedIu / concentration
         val guarded = converted.coerceAtMost(constraintsChecker.getMaxBolusAllowed().value() / concentration)
-        val result = Round.floorTo(guarded, activePumpInternal.pumpDescription.pumpType.determineCorrectBolusStepSize(guarded))
+        val result = Round.floorTo(guarded, activePumpInternal.bolusStepSize(guarded))
         if (result != converted)
             aapsLogger.warn(LTag.PUMP, "Concentration boundary adjusted bolus: requested $requestedIu IU -> $converted cU -> $result cU (concentration $concentration)")
         detailedBolusInfo.insulin = result
@@ -156,7 +173,8 @@ class PumpWithConcentrationImpl(
     }
 
     override suspend fun setTempBasalAbsolute(absoluteRate: Double, durationInMinutes: Int, enforceNew: Boolean, tbrType: PumpSync.TemporaryBasalType): PumpEnactResult =
-        profileFunction.getProfile()?.let { profile ->
+        if (profileFunction.isConcentrationChangePending()) refusedConcentrationChangePending()
+        else profileFunction.getProfile()?.let { profile ->
             // applyBasalConstraints folds the pump's own cU rate cap (ConstraintsChecker, in IU). Then convert
             // IU/h -> cU/h and floor to the pump's native absolute-temp-basal step. Reasons are logged.
             constraintsChecker.applyBasalConstraints(ConstraintObject(absoluteRate, aapsLogger), profile).value().let { absoluteAfterConstrains ->
@@ -175,13 +193,16 @@ class PumpWithConcentrationImpl(
         enforceNew: Boolean,
         tbrType: PumpSync.TemporaryBasalType
     ): PumpEnactResult =
-        profileFunction.getProfile()?.let { profile ->
+        // A percent of the old basal program in the pump is just as wrong as an absolute rate.
+        if (profileFunction.isConcentrationChangePending()) refusedConcentrationChangePending()
+        else profileFunction.getProfile()?.let { profile ->
             constraintsChecker.applyBasalPercentConstraints(ConstraintObject(percent, aapsLogger), profile).value().let { percentAfterConstraint ->
                 activePumpInternal.setTempBasalPercent(percentAfterConstraint, durationInMinutes, enforceNew, tbrType)
             }
         } ?: error("No profile running")
 
     override suspend fun setExtendedBolus(insulin: Double, durationInMinutes: Int): PumpEnactResult {
+        if (profileFunction.isConcentrationChangePending()) return refusedConcentrationChangePending()
         // Same boundary as deliverTreatment: last-resort guard against the overall cU max, then floor to the
         // pump's native extended-bolus step.
         val concentration = concentration
@@ -197,22 +218,36 @@ class PumpWithConcentrationImpl(
         }
     }
 
+    /** In insulin units: the driver's step for the same amount in pump units, converted back. */
+    override fun bolusStepSize(amount: Double): Double {
+        val conc = concentration
+        return toInsulinUnits(activePumpInternal.bolusStepSize(amount / conc), conc)
+    }
+
     /** PumpWithConcentration.pumpDescription should be used instead of Pump.pumpDescription outside Pump Driver to have corrected values */
     override val pumpDescription: PumpDescription
         get() {
             val conc = concentration
             return if (conc != 1.0) {
                 activePumpInternal.pumpDescription.clone().also {
-                    it.bolusStep *= conc
-                    it.extendedBolusStep *= conc
-                    it.extendedBolusMinAmount *= conc
-                    it.maxTempAbsolute *= conc
-                    it.tempAbsoluteStep *= conc
-                    it.basalStep *= conc
-                    it.basalMinimumRate *= conc
-                    it.basalMaximumRate *= conc
+                    it.bolusStep = toInsulinUnits(it.bolusStep, conc)
+                    it.extendedBolusStep = toInsulinUnits(it.extendedBolusStep, conc)
+                    it.extendedBolusMinAmount = toInsulinUnits(it.extendedBolusMinAmount, conc)
+                    // No limit stays no limit (Double.MAX_VALUE times 2 would be infinity).
+                    if (it.extendedBolusMaxAmount < Double.MAX_VALUE) it.extendedBolusMaxAmount = toInsulinUnits(it.extendedBolusMaxAmount, conc)
+                    it.maxTempAbsolute = toInsulinUnits(it.maxTempAbsolute, conc)
+                    it.tempAbsoluteStep = toInsulinUnits(it.tempAbsoluteStep, conc)
+                    it.basalStep = toInsulinUnits(it.basalStep, conc)
+                    it.basalMinimumRate = toInsulinUnits(it.basalMinimumRate, conc)
+                    it.basalMaximumRate = toInsulinUnits(it.basalMaximumRate, conc)
                     it.maxReservoirReading = (it.maxReservoirReading * conc).toInt()
                 }
             } else activePumpInternal.pumpDescription
         }
+
+    /**
+     * A value in pump units times the concentration, without the float tail: 0.05 * 0.2 is 0.010000000000000002,
+     * and a step like that made Round overflow. 9 decimal places are far below any step or limit of a pump.
+     */
+    private fun toInsulinUnits(value: Double, conc: Double): Double = Round.roundTo(value * conc, 1e-9)
 }

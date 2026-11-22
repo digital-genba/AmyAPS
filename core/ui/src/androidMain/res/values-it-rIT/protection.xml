@@ -5,12 +5,6 @@
     <string name="settings_protection">Protezione impostazioni</string>
     <string name="application_protection">Protezione applicazione</string>
     <string name="bolus_protection">Protezione bolo</string>
-    <string name="settings_password">Password impostazioni</string>
-    <string name="settings_pin">PIN impostazioni</string>
-    <string name="application_password">Password applicazione</string>
-    <string name="application_pin">PIN applicazione</string>
-    <string name="bolus_password">Password bolo</string>
-    <string name="bolus_pin">PIN bolo</string>
     <string name="protection_timeout_title">Tempo validità password e PIN [s]</string>
     <string name="protection_timeout_summary">Tempo per l\'inserimento di password o PIN</string>
     <!-- Protection type entries moved to core/keys/strings.xml -->
@@ -31,7 +25,7 @@
     <string name="auth_hint_master_or_password">Inserisci la master password o una password personalizzata</string>
     <string name="use_pin_password">Usa PIN/Password</string>
     <string name="current_master_password">Password Master corrente</string>
-    <string name="master_password_not_set">Password principale non impostata</string>
+    <string name="master_password_not_set">Password master non impostata</string>
     <string name="aaps_directory_not_selected">Directory AAPS non selezionata</string>
-    <string name="aaps_directory_access_lost">L\'accesso alla directory AAPS è stato perso, quindi le impostazioni non vengono più salvate sul telefono. Selezionare nuovamente la directory.</string>
+    <string name="aaps_directory_access_lost">L\'accesso alla directory AAPS è stato perso, quindi le impostazioni non vengono più salvate sul telefono. Seleziona di nuovo la directory.</string>
 </resources>

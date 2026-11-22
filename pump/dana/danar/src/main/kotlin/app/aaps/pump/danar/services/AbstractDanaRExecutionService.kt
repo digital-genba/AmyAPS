@@ -4,7 +4,9 @@ import android.content.Context
 import android.content.Intent
 import android.os.IBinder
 import android.os.SystemClock
+import app.aaps.core.data.time.T
 import app.aaps.core.interfaces.di.ApplicationScope
+import app.aaps.core.interfaces.di.MetroMemberInjector
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.notifications.NotificationId
@@ -28,7 +30,9 @@ import app.aaps.core.interfaces.rx.events.EventShowSnackbar
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.TextRef
+import app.aaps.core.objects.workflow.MetroService
 import app.aaps.pump.dana.DanaPump
+import app.aaps.core.interfaces.pump.PumpSuspendSync
 import app.aaps.pump.dana.R
 import app.aaps.pump.dana.comm.RecordTypes
 import app.aaps.pump.dana.keys.DanaStringNonKey
@@ -47,17 +51,16 @@ import app.aaps.pump.danar.comm.MsgHistoryRefill
 import app.aaps.pump.danar.comm.MsgHistorySuspend
 import app.aaps.pump.danar.comm.MsgPCCommStart
 import app.aaps.pump.danar.comm.MsgPCCommStop
-import app.aaps.core.objects.workflow.MetroService
-import app.aaps.core.interfaces.di.MetroMemberInjector
 import dev.zacsweers.metro.HasMemberInjections
+import dev.zacsweers.metro.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import java.io.IOException
-import dev.zacsweers.metro.Inject
 import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.min
 
 /**
@@ -95,6 +98,9 @@ abstract class AbstractDanaRExecutionService : MetroService() {
         protected set
     @Volatile protected var mHandshakeInProgress = false
     @Volatile protected var mSerialIOThread: SerialIOThread? = null
+    // "Device not found" is shown once, then not again until the device has been found. The queue tries
+    // to connect about every second, and a message for every try covered the screen.
+    @Volatile private var deviceNotFoundShown = false
     protected var mBinder: IBinder? = null
     abstract fun messageHashTable(): MessageHashTableBase
 
@@ -167,6 +173,30 @@ abstract class AbstractDanaRExecutionService : MetroService() {
         mSerialIOThread?.disconnect("stopConnecting")
     }
 
+    /**
+     * Sends [message] to the pump and waits for its answer.
+     *
+     * @return true only when the pump answered and did not refuse. `failed` alone does not say it: only an answer sets it,
+     * so a message with no link, or with a lost answer, had `failed` false and a write was taken as done.
+     */
+    protected fun sendToPump(message: MessageBase): Boolean {
+        val serialIOThread = mSerialIOThread ?: return false
+        serialIOThread.sendMessage(message)
+        return message.isReceived && !message.failed
+    }
+
+    /**
+     * Whether the pump gives [basal] after a profile write. [written]: the pump answered the write and took it. With no
+     * answer the pump may have taken it all the same, so its basal, read back with [read], tells. Taken as failed, such a
+     * write rang a false alarm; taken as done when it never reached the pump, AAPS ran a basal the pump did not give.
+     */
+    protected fun pumpGivesBasal(written: Boolean, read: MessageBase, basal: Array<Double>): Boolean {
+        if (written) return true
+        if (!sendToPump(read)) return false
+        val onPump = danaPump.pumpProfiles?.getOrNull(danaPump.activeProfile) ?: return false
+        return basal.indices.all { abs(onPump[it] - basal[it]) < BASAL_TOLERANCE }
+    }
+
     fun connect() {
         if (isConnecting) return
         Thread(Runnable {
@@ -198,8 +228,9 @@ abstract class AbstractDanaRExecutionService : MetroService() {
         val deviceName = preferences.get(DanaStringNonKey.RName)
         mRfcommSocket = rfcommTransport.getSocketForDevice(deviceName)
         if (mRfcommSocket == null) {
-            rxBus.send(EventShowSnackbar(rh.gs(R.string.devicenotfound), EventShowSnackbar.Type.Error))
-        }
+            if (!deviceNotFoundShown) rxBus.send(EventShowSnackbar(rh.gs(R.string.devicenotfound), EventShowSnackbar.Type.Error))
+            deviceNotFoundShown = true
+        } else deviceNotFoundShown = false
     }
 
     fun bolusStop() {
@@ -207,12 +238,12 @@ abstract class AbstractDanaRExecutionService : MetroService() {
         val stop = MsgBolusStop(injector)
         danaPump.bolusStopForced = true
         if (isConnected) {
-            mSerialIOThread?.sendMessage(stop)
+            sendToPump(stop)
             // Bound the retries: re-check the connection each iteration and cap at 10s so a lost stop
             // ack or a link drop mid-stop can't spin this thread forever.
             val giveUpAt = System.currentTimeMillis() + 10 * 1000L
             while (!danaPump.bolusStopped && isConnected && System.currentTimeMillis() < giveUpAt) {
-                mSerialIOThread?.sendMessage(stop)
+                sendToPump(stop)
                 SystemClock.sleep(200)
             }
             if (!danaPump.bolusStopped) {
@@ -241,16 +272,43 @@ abstract class AbstractDanaRExecutionService : MetroService() {
             else                              -> error("Unsupported type")
         }
         danaPump.historyDoneReceived = false
-        mSerialIOThread?.sendMessage(MsgPCCommStart(injector))
+        sendToPump(MsgPCCommStart(injector))
         SystemClock.sleep(400)
-        mSerialIOThread?.sendMessage(msg)
+        sendToPump(msg)
+        // A real Korean DanaR sends its records and no "done" (2026-11-10): the read waited until the pump dropped the
+        // link about 100 s later, and the queue with it. Its records came about every 50 ms, so a quiet link is the end.
+        val completed = waitForHistoryDone(endWhenQuietFor = HISTORY_QUIET_MS)
+        SystemClock.sleep(200)
+        sendToPump(MsgPCCommStop(injector))
+        if (completed) result.success(true).comment("OK")
+        else result.success(false).comment("Timeout waiting for history")
+        return result
+    }
+
+    /**
+     * Waits until the pump says the history upload is done, or the link is gone.
+     *
+     * Capped at 5 minutes, like DanaRS. Without the cap, a lost "history done" message on a link that
+     * still reported connected kept this loop, and so the whole command queue, busy forever (#5209).
+     *
+     * @param endWhenQuietFor when not null, it also ends when the pump has sent nothing for this long
+     * @return false only when it gave up because of the time limit
+     */
+    protected fun waitForHistoryDone(endWhenQuietFor: Long? = null): Boolean {
+        val startWait = System.currentTimeMillis()
         while (!danaPump.historyDoneReceived && mRfcommSocket?.isConnected == true) {
+            val now = System.currentTimeMillis()
+            if (now - startWait > T.mins(5).msecs()) {
+                aapsLogger.error(LTag.PUMPCOMM, "Timeout waiting for history done")
+                return false
+            }
+            if (endWhenQuietFor != null && now - max(startWait, mSerialIOThread?.lastMessageAt ?: 0) > endWhenQuietFor) {
+                aapsLogger.debug(LTag.PUMPCOMM, "No history done, but the pump sent nothing for $endWhenQuietFor ms: the history is read")
+                return true
+            }
             SystemClock.sleep(100)
         }
-        SystemClock.sleep(200)
-        mSerialIOThread?.sendMessage(MsgPCCommStop(injector))
-        result.success(true).comment("OK")
-        return result
+        return true
     }
 
     fun waitForWholeMinute() {
@@ -264,10 +322,13 @@ abstract class AbstractDanaRExecutionService : MetroService() {
     }
 
     suspend fun doSanityCheck() {
+        PumpSuspendSync.followStatus(pumpSync, aapsLogger, danaPump.pumpSuspended, dateUtil.now(), activePlugin.activePump.model(), activePlugin.activePump.serialNumber())
         val (temporaryBasal, extendedBolus) = pumpSync.expectedPumpState()
 
-        // Temporary basal
-        if (temporaryBasal != null) {
+        // Temporary basal. A stop of the pump is the record of the line above, not a temp basal of the pump.
+        if (temporaryBasal?.type == PumpSync.TemporaryBasalType.PUMP_SUSPEND) {
+            // nothing to compare
+        } else if (temporaryBasal != null) {
             if (danaPump.isTempBasalInProgress) {
                 if (temporaryBasal.rate != danaPump.tempBasalPercent.toDouble()
                     || abs(temporaryBasal.timestamp - danaPump.tempBasalStart) > 10000
@@ -324,7 +385,9 @@ abstract class AbstractDanaRExecutionService : MetroService() {
                         PumpRate(danaPump.extendedBolusAmount),
                         danaPump.extendedBolusDuration,
                         activePlugin.activePump.isFakingTempsByExtendedBoluses,
-                        danaPump.tempBasalStart,
+                        // Its own start, as setExtendedBolus does. The temp basal's start was 0 with no temp basal, and a
+                        // second extended bolus set on the pump only updated the ended record of the first one.
+                        danaPump.extendedBolusStart,
                         activePlugin.activePump.model(),
                         activePlugin.activePump.serialNumber()
                     )
@@ -348,11 +411,20 @@ abstract class AbstractDanaRExecutionService : MetroService() {
                     PumpRate(danaPump.extendedBolusAmount),
                     danaPump.extendedBolusDuration,
                     activePlugin.activePump.isFakingTempsByExtendedBoluses,
-                    danaPump.tempBasalStart,
+                    danaPump.extendedBolusStart,
                     activePlugin.activePump.model(),
                     activePlugin.activePump.serialNumber()
                 )
             }
         }
+    }
+
+    protected companion object {
+
+        /** The records of a history read come about every 50 ms; this long with nothing means the pump has sent them all. */
+        const val HISTORY_QUIET_MS = 10_000L
+
+        /** The pump keeps a rate in hundredths of a unit; the record sent to it adds 0.00001 against a cut. */
+        const val BASAL_TOLERANCE = 0.005
     }
 }

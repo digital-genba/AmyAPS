@@ -1,14 +1,17 @@
 package app.aaps.pump.danarkorean.comm
 
+import app.aaps.core.interfaces.di.MetroMemberInjector
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.notifications.NotificationId
 import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.pump.danar.comm.MessageBase
-import app.aaps.core.interfaces.di.MetroMemberInjector
 
 class MsgInitConnStatusBasicK(
     injector: MetroMemberInjector
 ) : MessageBase(injector) {
+
+    // Bytes 4-5 are the pump password
+    override val containsSecret: Boolean = true
 
     init {
         setCommand(0x0303)
@@ -28,7 +31,7 @@ class MsgInitConnStatusBasicK(
         aapsLogger.debug(LTag.PUMPCOMM, "isUtilityEnable: $isUtilityEnable")
         aapsLogger.debug(LTag.PUMPCOMM, "Is EasyUI Enabled: " + danaPump.isEasyModeEnabled)
         aapsLogger.debug(LTag.PUMPCOMM, "easyUIMode: $easyUIMode")
-        aapsLogger.debug(LTag.PUMPCOMM, "Pump password: " + danaPump.password)
+        aapsLogger.debug(LTag.PUMPCOMM, "Pump password received")
         if (danaPump.isEasyModeEnabled) {
             notificationManager.post(NotificationId.EASY_MODE_ENABLED, TextRef.AndroidRes(app.aaps.pump.dana.R.string.danar_disableeasymode))
         } else {
@@ -39,5 +42,8 @@ class MsgInitConnStatusBasicK(
         } else {
             notificationManager.dismiss(NotificationId.WRONG_PUMP_PASSWORD)
         }
+        // The last message of the start of a link: a real Korean DanaR sent 0x0301, 0x0302, 0x0303 (2026-11-10). The link
+        // was taken as ready at 0x0302, and a bolus start sent before this message got no answer and was not given.
+        activePlugin.activePump.finishHandshaking()
     }
 }

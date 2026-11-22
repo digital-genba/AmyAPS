@@ -26,6 +26,12 @@ interface VisibilityContext {
     val isBatteryChangeLoggingEnabled: Boolean
 
     /**
+     * Whether the active pump can be filled and primed from AAPS. Patch pumps cannot: they fill and
+     * prime in their own activation wizard.
+     */
+    val isRefillingCapable: Boolean
+
+    /**
      * Whether the active BG source supports advanced filtering (for SMB-related preferences).
      */
     val advancedFilteringSupported: Boolean
@@ -54,6 +60,13 @@ interface VisibilityContext {
         get() = true
 
     /**
+     * This phone's role on the master ([ClientRole]); always [ClientRole.Admin] on a master. An element that needs
+     * a higher role is not shown: the master would refuse it anyway.
+     */
+    val clientRole: ClientRole
+        get() = ClientRole.Admin
+
+    /**
      * Whether the pump is currently paired/connected.
      * Used by pump plugins like ComboV2 to enable/disable pairing preferences.
      */
@@ -80,6 +93,13 @@ interface VisibilityContext {
      */
     val apsOffersDynamicSensitivity: Boolean
         get() = false
+
+    /**
+     * Whether AAPS can be shown in a language of its own. False on Android 12, which has no app languages:
+     * AAPS follows the phone there, so its language setting is hidden.
+     */
+    val supportsAppLanguage: Boolean
+        get() = true
 }
 
 /**

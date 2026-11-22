@@ -4,48 +4,58 @@ import android.content.Context
 import android.os.PowerManager
 import androidx.compose.ui.text.font.FontWeight
 import app.aaps.core.data.model.BS
+import app.aaps.core.data.model.CA
+import app.aaps.core.data.model.EPS
+import app.aaps.core.data.model.RM
+import app.aaps.core.data.model.data.Block
 import app.aaps.core.interfaces.alerts.LocalAlertUtils
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.logging.AAPSLogger
+import app.aaps.core.interfaces.notifications.AapsNotification
 import app.aaps.core.interfaces.notifications.AlarmSound
 import app.aaps.core.interfaces.notifications.NotificationAction
 import app.aaps.core.interfaces.notifications.NotificationId
 import app.aaps.core.interfaces.notifications.NotificationLevel
 import app.aaps.core.interfaces.notifications.NotificationManager
 import app.aaps.core.interfaces.plugin.ActivePlugin
+import app.aaps.core.interfaces.profile.Profile.ProfileValue
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.pump.BolusProgressData
 import app.aaps.core.interfaces.pump.DetailedBolusInfo
+import app.aaps.core.interfaces.pump.ECarbs
 import app.aaps.core.interfaces.pump.PumpEnactResult
+import app.aaps.core.interfaces.pump.PumpInsulin
 import app.aaps.core.interfaces.pump.PumpSync
 import app.aaps.core.interfaces.queue.Command
 import app.aaps.core.interfaces.queue.CustomCommand
+import app.aaps.core.interfaces.queue.SmbPause
 import app.aaps.core.interfaces.resources.TextResolver
 import app.aaps.core.interfaces.rx.bus.RxBus
 import app.aaps.core.interfaces.rx.events.EventProfileChangeRequested
 import app.aaps.core.interfaces.smsCommunicator.SmsCommunicator
+import app.aaps.core.interfaces.ui.UiInteraction
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.DecimalFormatter
 import app.aaps.core.interfaces.utils.fabric.FabricPrivacy
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.objects.constraints.ConstraintObject
+import app.aaps.core.objects.profile.ProfileSealed
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.implementation.profile.ProfileSwitchSilentGate
 import app.aaps.shared.tests.TestBaseWithProfile
 import app.aaps.shared.tests.generatedTextResolver
 import com.google.common.truth.Truth.assertThat
-import java.util.Calendar
-import kotlin.reflect.KClass
-import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
 import org.junit.jupiter.api.BeforeEach
@@ -54,12 +64,22 @@ import org.mockito.ArgumentMatchers.anyLong
 import org.mockito.Mock
 import org.mockito.kotlin.any
 import org.mockito.kotlin.anyOrNull
+import org.mockito.kotlin.argumentCaptor
+import org.mockito.kotlin.atLeast
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
+import org.mockito.verification.VerificationMode
+import java.util.Calendar
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.reflect.KClass
+import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 
 class CommandQueueImplementationTest : TestBaseWithProfile() {
 
@@ -72,11 +92,13 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
     @Mock lateinit var smsCommunicator: SmsCommunicator
     private val smsCommunicatorProvider: () -> SmsCommunicator by lazy { { smsCommunicator } }
     @Mock lateinit var commandExecutor: CommandExecutor
+    @Mock lateinit var uiInteraction: UiInteraction
     private val commandExecutorProvider: () -> CommandExecutor by lazy { { commandExecutor } }
 
     private val testScope = CoroutineScope(Dispatchers.Unconfined)
     private val bolusProgressData by lazy { BolusProgressData(ch, testScope) }
     private val profileSwitchSilentGate = ProfileSwitchSilentGate()
+    private val smbPause by lazy { SmbPauseImpl(aapsLogger, dateUtil) }
 
     class CommandQueueMocked(
         aapsLogger: AAPSLogger,
@@ -99,11 +121,14 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
         smsCommunicator: () -> SmsCommunicator,
         commandExecutor: () -> CommandExecutor,
         appScope: CoroutineScope,
-        bolusProgressData: BolusProgressData
+        bolusProgressData: BolusProgressData,
+        smbPause: SmbPause,
+        uiInteraction: () -> UiInteraction
     ) : CommandQueueImplementation(
         aapsLogger, rxBus, rh, constraintChecker, profileFunction,
         activePlugin, config, dateUtil, fabricPrivacy,
-        notificationManager, persistenceLayer, decimalFormatter, pumpEnactResultProvider, pumpSync, preferences, profileSwitchSilentGate, localAlertUtils, smsCommunicator, commandExecutor, appScope, bolusProgressData
+        notificationManager, persistenceLayer, decimalFormatter, pumpEnactResultProvider, pumpSync, preferences, profileSwitchSilentGate, localAlertUtils, smsCommunicator, commandExecutor, appScope, bolusProgressData,
+        smbPause, uiInteraction
     ) {
 
         override fun notifyAboutNewCommand(): Boolean = true
@@ -115,33 +140,39 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
 
     private lateinit var commandQueue: CommandQueueImplementation
 
+    /** [appScope] is where the queue launches its own work - pass a test scope to control its time. */
+    private fun newQueue(appScope: CoroutineScope): CommandQueueImplementation =
+        CommandQueueMocked(
+            aapsLogger,
+            rxBus,
+            text,
+            constraintChecker,
+            profileFunction,
+            activePlugin,
+            config,
+            dateUtil,
+            fabricPrivacy,
+            notificationManager,
+            persistenceLayer,
+            decimalFormatter,
+            { pumpEnactResultProvider() },
+            pumpSync,
+            preferences,
+            profileSwitchSilentGate,
+            localAlertUtilsProvider,
+            smsCommunicatorProvider,
+            commandExecutorProvider,
+            appScope,
+            bolusProgressData,
+            smbPause,
+            { uiInteraction }
+        )
+
     @BeforeEach
     fun prepare() {
         runTest {
             whenever(persistenceLayer.observeChanges(anyOrNull<KClass<*>>())).thenReturn(emptyFlow())
-            commandQueue = CommandQueueMocked(
-                aapsLogger,
-                rxBus,
-                text,
-                constraintChecker,
-                profileFunction,
-                activePlugin,
-                config,
-                dateUtil,
-                fabricPrivacy,
-                notificationManager,
-                persistenceLayer,
-                decimalFormatter,
-                { pumpEnactResultProvider() },
-                pumpSync,
-                preferences,
-                profileSwitchSilentGate,
-                localAlertUtilsProvider,
-                smsCommunicatorProvider,
-                commandExecutorProvider,
-                testScope,
-                bolusProgressData
-            )
+            commandQueue = newQueue(testScope)
             testPumpPlugin.pumpDescription.basalMinimumRate = 0.1
             testPumpPlugin.connected = true
 
@@ -157,9 +188,12 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
                 )
             )
             whenever(profileFunction.getProfile()).thenReturn(effectiveProfile)
+            // The executor holds every command until the app has finished starting.
+            whenever(config.appInitialized).thenReturn(true)
 
             val bolusConstraint = ConstraintObject(0.0, aapsLogger)
             whenever(constraintChecker.applyBolusConstraints(anyOrNull())).thenReturn(bolusConstraint)
+            whenever(constraintChecker.applyPrimingConstraints(anyOrNull())).thenReturn(PumpInsulin(0.0))
             whenever(constraintChecker.applyExtendedBolusConstraints(anyOrNull())).thenReturn(bolusConstraint)
             val carbsConstraint = ConstraintObject(0, aapsLogger)
             whenever(constraintChecker.applyCarbsConstraints(anyOrNull())).thenReturn(carbsConstraint)
@@ -181,11 +215,11 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
             aapsLogger, rxBus, text, constraintChecker, profileFunction, activePlugin, config, dateUtil,
             fabricPrivacy, notificationManager, persistenceLayer, decimalFormatter, { pumpEnactResultProvider() },
             pumpSync, preferences, profileSwitchSilentGate, localAlertUtilsProvider, smsCommunicatorProvider,
-            { executor }, testScope, bolusProgressData
+            { executor }, testScope, bolusProgressData, smbPause, { uiInteraction }
         )
         // Real executor sharing this queue: notifyAboutNewCommand() signals it and it drains on its own thread.
         executor = CommandExecutor(
-            aapsLogger, fabricPrivacy, commandQueue, rxBus, activePlugin, text, preferences, config, bolusProgressData, TestCommandExecutionPlatform()
+            aapsLogger, fabricPrivacy, commandQueue, rxBus, activePlugin, text, preferences, config, bolusProgressData, TestCommandExecutionPlatform(), notificationManager
         )
 
         // start with empty queue
@@ -215,35 +249,258 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
         assertThat(commandQueue.size()).isEqualTo(0)
     }
 
+    /**
+     * A pump that is neither connected nor connecting is asked to connect, and then the command runs. A Medtronic
+     * after a failed tune-up reports this now: it reported connecting, so the queue only waited until it timed out
+     * and never asked it to connect, and nothing tuned again (#3253).
+     */
     @Test
-    fun bolusSucceedsButCarbsFailToStore_postsCarbsLostNotification() = runTest {
-        // Regression: bolus delivered, but persisting the accompanying carbs threw. This used to be
-        // swallowed log-only, leaving COB/IOB silently wrong. The failure must now surface a notification
-        // so the user knows to re-enter the carbs. See CommandQueueImplementation.bolus() post-bolus catch.
+    fun `a pump that is not connected and not connecting is asked to connect`() = runTest {
+        testPumpPlugin.connected = false
         lateinit var executor: CommandExecutor
         commandQueue = CommandQueueImplementation(
             aapsLogger, rxBus, text, constraintChecker, profileFunction, activePlugin, config, dateUtil,
             fabricPrivacy, notificationManager, persistenceLayer, decimalFormatter, { pumpEnactResultProvider() },
             pumpSync, preferences, profileSwitchSilentGate, localAlertUtilsProvider, smsCommunicatorProvider,
-            { executor }, testScope, bolusProgressData
+            { executor }, testScope, bolusProgressData, smbPause, { uiInteraction }
         )
         executor = CommandExecutor(
-            aapsLogger, fabricPrivacy, commandQueue, rxBus, activePlugin, text, preferences, config, bolusProgressData, TestCommandExecutionPlatform()
+            aapsLogger, fabricPrivacy, commandQueue, rxBus, activePlugin, text, preferences, config, bolusProgressData, TestCommandExecutionPlatform(), notificationManager
         )
+
+        var result: PumpEnactResult? = null
+        CoroutineScope(Dispatchers.IO).launch { result = commandQueue.bolus(DetailedBolusInfo()) }
+        var waitedMs = 0
+        while (result == null && waitedMs < 8000) {
+            Thread.sleep(100); waitedMs += 100
+        }
+
+        // Without the call the queue waits for the connection until it times out. Counted, not read from `connected`:
+        // the queue disconnects as soon as the bolus is done (the test pump keeps the link 0 s), often before this runs.
+        assertThat(testPumpPlugin.connectCalls).isAtLeast(1)
+        assertThat(result?.success).isTrue()
+    }
+
+    /**
+     * The link closed while the queue waited to disconnect after its last command: nothing is left to send, so the
+     * queue ends without connecting again. It used to connect only to disconnect; with a pump that could not connect
+     * (a stopped driver) it went on trying until the connection timeout, and the Bluetooth watchdog then switched the
+     * phone's Bluetooth off and on for no command.
+     */
+    @Test
+    fun `a link that closes while the queue waits to disconnect is not opened again`() = runTest {
+        testPumpPlugin.connected = false
+        testPumpPlugin.lingerSeconds = 30
+        lateinit var executor: CommandExecutor
+        commandQueue = CommandQueueImplementation(
+            aapsLogger, rxBus, text, constraintChecker, profileFunction, activePlugin, config, dateUtil,
+            fabricPrivacy, notificationManager, persistenceLayer, decimalFormatter, { pumpEnactResultProvider() },
+            pumpSync, preferences, profileSwitchSilentGate, localAlertUtilsProvider, smsCommunicatorProvider,
+            { executor }, testScope, bolusProgressData, smbPause, { uiInteraction }
+        )
+        executor = CommandExecutor(
+            aapsLogger, fabricPrivacy, commandQueue, rxBus, activePlugin, text, preferences, config, bolusProgressData, TestCommandExecutionPlatform(), notificationManager
+        )
+        var result: PumpEnactResult? = null
+        CoroutineScope(Dispatchers.IO).launch { result = commandQueue.bolus(DetailedBolusInfo()) }
+        var waitedMs = 0
+        while (result == null && waitedMs < 8000) {
+            Thread.sleep(100); waitedMs += 100
+        }
+        assertThat(result?.success).isTrue()
+        val connects = testPumpPlugin.connectCalls
+
+        // The queue now keeps the link for 30 s. The pump ends it.
+        testPumpPlugin.connected = false
+        waitedMs = 0
+        while (executor.isProcessing() && waitedMs < 5000) {
+            Thread.sleep(100); waitedMs += 100
+        }
+
+        assertThat(executor.isProcessing()).isFalse()
+        assertThat(testPumpPlugin.connectCalls).isEqualTo(connects)
+        assertThat(testPumpPlugin.connected).isFalse()
+    }
+
+    /**
+     * A command took longer than the connection limit and the link was lost during it: the next command still gets a
+     * try to connect. The time of the commands already run used to count as connection time, so the queue dropped the
+     * next one at once as "timed out", with no try. Seen on an Omnipod 5 pod out of range: a bolus of 4.5 minutes, and
+     * the status read queued after it was dropped in the same second.
+     */
+    @Test
+    fun `after a long command that lost the link the next command still tries to connect`() = runTest {
+        // A status read is a success only with pump data from the last minute.
+        testPumpPlugin.lastData = System.currentTimeMillis()
+        lateinit var executor: CommandExecutor
+        commandQueue = CommandQueueImplementation(
+            aapsLogger, rxBus, text, constraintChecker, profileFunction, activePlugin, config, dateUtil,
+            fabricPrivacy, notificationManager, persistenceLayer, decimalFormatter, { pumpEnactResultProvider() },
+            pumpSync, preferences, profileSwitchSilentGate, localAlertUtilsProvider, smsCommunicatorProvider,
+            { executor }, testScope, bolusProgressData, smbPause, { uiInteraction }
+        )
+        executor = CommandExecutor(
+            aapsLogger, fabricPrivacy, commandQueue, rxBus, activePlugin, text, preferences, config, bolusProgressData, TestCommandExecutionPlatform(), notificationManager
+        )
+        // 1 s instead of the real 2 minutes, and a bolus of 2.5 s: longer than the limit.
+        executor.maxConnectionSeconds = 1
+        var readStatusResult: PumpEnactResult? = null
+        testPumpPlugin.duringBolus = {
+            // Queued while the bolus runs, so it waits for it.
+            CoroutineScope(Dispatchers.IO).launch { readStatusResult = commandQueue.readStatus("test") }
+            delay(2_500)
+            testPumpPlugin.connected = false
+        }
+
+        var bolusResult: PumpEnactResult? = null
+        CoroutineScope(Dispatchers.IO).launch { bolusResult = commandQueue.bolus(DetailedBolusInfo()) }
+        var waitedMs = 0
+        while (readStatusResult == null && waitedMs < 10_000) {
+            Thread.sleep(100); waitedMs += 100
+        }
+
+        assertThat(bolusResult?.success).isTrue()
+        assertThat(testPumpPlugin.connectCalls).isAtLeast(1)
+        assertThat(readStatusResult?.success).isTrue()
+    }
+
+    /**
+     * The queue does not reach the pump before the app has finished starting. Until then there is no profile, so the
+     * records a command brings were dropped by PumpSync for good: seen on a real pump, whose status read at app start
+     * read a bolus from the pump history and lost it. Every driver queues a status read while the app starts, through
+     * `PumpPluginBase.onStart`.
+     */
+    @Test
+    fun `the queue does not reach the pump before the app has finished starting`() = runTest {
+        val started = AtomicBoolean(false)
+        whenever(config.appInitialized).thenAnswer { started.get() }
+        testPumpPlugin.connected = false
+        lateinit var executor: CommandExecutor
+        commandQueue = CommandQueueImplementation(
+            aapsLogger, rxBus, text, constraintChecker, profileFunction, activePlugin, config, dateUtil,
+            fabricPrivacy, notificationManager, persistenceLayer, decimalFormatter, { pumpEnactResultProvider() },
+            pumpSync, preferences, profileSwitchSilentGate, localAlertUtilsProvider, smsCommunicatorProvider,
+            { executor }, testScope, bolusProgressData, smbPause, { uiInteraction }
+        )
+        executor = CommandExecutor(
+            aapsLogger, fabricPrivacy, commandQueue, rxBus, activePlugin, text, preferences, config, bolusProgressData, TestCommandExecutionPlatform(), notificationManager
+        )
+
+        var result: PumpEnactResult? = null
+        CoroutineScope(Dispatchers.IO).launch { result = commandQueue.bolus(DetailedBolusInfo()) }
+        Thread.sleep(1_500)
+        assertThat(testPumpPlugin.connected).isFalse()
+        assertThat(result).isNull()
+
+        started.set(true)
+        var waitedMs = 0
+        while (result == null && waitedMs < 8000) {
+            Thread.sleep(100); waitedMs += 100
+        }
+        assertThat(testPumpPlugin.connected).isTrue()
+        assertThat(result?.success).isTrue()
+    }
+
+    /** A bolus through a real executor on a phone that has no Bluetooth permission, for a real pump. */
+    private fun bolusWithoutBluetoothPermission(): PumpEnactResult? {
+        whenever(config.PUMPDRIVERS).thenReturn(true)
+        lateinit var executor: CommandExecutor
+        commandQueue = CommandQueueImplementation(
+            aapsLogger, rxBus, text, constraintChecker, profileFunction, activePlugin, config, dateUtil,
+            fabricPrivacy, notificationManager, persistenceLayer, decimalFormatter, { pumpEnactResultProvider() },
+            pumpSync, preferences, profileSwitchSilentGate, localAlertUtilsProvider, smsCommunicatorProvider,
+            { executor }, testScope, bolusProgressData, smbPause, { uiInteraction }
+        )
+        executor = CommandExecutor(
+            aapsLogger, fabricPrivacy, commandQueue, rxBus, activePlugin, text, preferences, config, bolusProgressData,
+            TestCommandExecutionPlatform(bluetoothPermission = false), notificationManager
+        )
+        var result: PumpEnactResult? = null
+        CoroutineScope(Dispatchers.IO).launch { result = commandQueue.bolus(DetailedBolusInfo()) }
+        var waitedMs = 0
+        while (result == null && waitedMs < 8000) {
+            Thread.sleep(100); waitedMs += 100
+        }
+        return result
+    }
+
+    /**
+     * Without the Bluetooth permission no command can reach the pump. The bolus fails at once with that reason, and a
+     * notification says what to fix (#5440). It used to wait in a loop with a snackbar every 5 s, and the bolus was
+     * given whenever the permission came back, maybe hours late.
+     */
+    @Test
+    fun `without the Bluetooth permission a bolus fails at once and says why`() = runTest {
+        whenever(notificationManager.notifications).thenReturn(MutableStateFlow(emptyList()))
+
+        val result = bolusWithoutBluetoothPermission()
+
+        assertThat(result?.success).isFalse()
+        // A failure with its alarm, not a quiet cancel: the user wanted this insulin.
+        assertThat(result?.cancelled).isFalse()
+        assertThat(result?.comment).isEqualTo("Application needs bluetooth permission")
+        verify(notificationManager).post(
+            eq(NotificationId.BLUETOOTH_PERMISSION_MISSING), eq(CoreUiStrings.need_connect_permission),
+            any<NotificationLevel>(), any<Int>(), any<Long>(), any<Long>(), anyOrNull(), any<List<NotificationAction>>(), anyOrNull()
+        )
+    }
+
+    /** Posting again would replace it with a new date and raise the Android notification again. */
+    @Test
+    fun `the Bluetooth permission notification is not posted again while it is shown`() = runTest {
+        val shown = AapsNotification(NotificationId.BLUETOOTH_PERMISSION_MISSING, instanceKey = 0, text = "", level = NotificationLevel.IMPORTANT)
+        whenever(notificationManager.notifications).thenReturn(MutableStateFlow(listOf(shown)))
+
+        val result = bolusWithoutBluetoothPermission()
+
+        assertThat(result?.success).isFalse()
+        verify(notificationManager, never()).post(
+            eq(NotificationId.BLUETOOTH_PERMISSION_MISSING), any<TextRef>(),
+            any<NotificationLevel>(), any<Int>(), any<Long>(), any<Long>(), anyOrNull(), any<List<NotificationAction>>(), anyOrNull()
+        )
+    }
+
+    /** A queue with a real [CommandExecutor], so a bolus is really given by the TestPumpPlugin. */
+    private fun useRealExecutor() {
+        lateinit var executor: CommandExecutor
+        commandQueue = CommandQueueImplementation(
+            aapsLogger, rxBus, text, constraintChecker, profileFunction, activePlugin, config, dateUtil,
+            fabricPrivacy, notificationManager, persistenceLayer, decimalFormatter, { pumpEnactResultProvider() },
+            pumpSync, preferences, profileSwitchSilentGate, localAlertUtilsProvider, smsCommunicatorProvider,
+            { executor }, testScope, bolusProgressData, smbPause, { uiInteraction }
+        )
+        executor = CommandExecutor(
+            aapsLogger, fabricPrivacy, commandQueue, rxBus, activePlugin, text, preferences, config, bolusProgressData, TestCommandExecutionPlatform(), notificationManager
+        )
+    }
+
+    /**
+     * [CommandQueueImplementation.bolus] on a real dispatcher: its internal deferred.await() must resume on real
+     * threads (the queue worker completes it off the test scheduler), which Thread.sleep can advance.
+     */
+    private fun bolusOnRealThreads(detailedBolusInfo: DetailedBolusInfo): PumpEnactResult? {
+        var result: PumpEnactResult? = null
+        CoroutineScope(Dispatchers.IO).launch { result = commandQueue.bolus(detailedBolusInfo) }
+        var waitedMs = 0
+        while (result == null && waitedMs < 8000) {
+            Thread.sleep(100); waitedMs += 100
+        }
+        return result
+    }
+
+    @Test
+    fun bolusSucceedsButCarbsFailToStore_postsCarbsLostNotification() = runTest {
+        // Regression: bolus delivered, but persisting the accompanying carbs threw. This used to be
+        // swallowed log-only, leaving COB/IOB silently wrong. The failure must now surface a notification
+        // so the user knows to re-enter the carbs. See CommandQueueImplementation.bolus() post-bolus catch.
+        useRealExecutor()
         whenever(rh.gs(app.aaps.core.ui.R.string.carbs_not_saved_after_bolus)).thenReturn("Carbs could not be saved")
         // The pump delivers successfully (TestPumpPlugin), but storing carbs blows up.
         whenever(persistenceLayer.insertOrUpdateCarbs(anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull()))
             .thenThrow(RuntimeException("db unavailable"))
 
-        // Run the whole bolus() on a real dispatcher: its internal deferred.await() must resume on real
-        // threads (the queue worker completes it off the test scheduler), which Thread.sleep can advance.
         // insulin != 0 → NOT the carbs-only path; carbs != 0 → carbs persisted only after the bolus succeeds.
-        var result: PumpEnactResult? = null
-        CoroutineScope(Dispatchers.IO).launch { result = commandQueue.bolus(DetailedBolusInfo().apply { insulin = 1.0; carbs = 20.0 }) }
-        var waitedMs = 0
-        while (result == null && waitedMs < 8000) {
-            Thread.sleep(100); waitedMs += 100
-        }
+        val result = bolusOnRealThreads(DetailedBolusInfo().apply { insulin = 1.0; carbs = 20.0 })
         assertThat(result?.success).isTrue()
 
         // The user is alerted (URGENT) that the carbs were lost — not silently dropped.
@@ -282,11 +539,11 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
     }
 
     /** Lets the queued profile command finish as a pump that wrote it. */
-    private fun completeQueuedProfileSet() {
+    private fun completeQueuedProfileSet(enacted: Boolean = true) {
         commandQueue.pickup()
         val command = commandQueue.performing()
         assertThat(command?.commandType).isEqualTo(Command.CommandType.BASAL_PROFILE)
-        command?.callback?.result(enactResult(isSuccess = true, isEnacted = true))?.run()
+        command?.completion?.complete(enactResult(isSuccess = true, isEnacted = enacted))
     }
 
     /** NSClient updating the PS with its nsId, or KeepAlive with the pump in order: nothing to do. */
@@ -331,6 +588,310 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
         verify(persistenceLayer, times(1)).insertOrUpdateEffectiveProfileSwitch(any())
     }
 
+    /**
+     * The switches changed while the pump was busy: on a Medtronic a scene ended 40 s into the write and cut this
+     * switch. Its EPS put the scene's percentage in force again until the next pump write. The event for the change
+     * waits behind this one and sets the switch then in force, so this one gets no EPS and no notice.
+     */
+    @Test
+    fun `a PS that is no longer requested when the pump has set it gets no EPS`() = runTest {
+        givenActiveEpsFrom(139)
+        testPumpPlugin.isProfileSet = false
+
+        rxBus.send(EventProfileChangeRequested())
+        assertThat(commandQueue.size()).isEqualTo(1)
+        whenever(profileFunction.getRequestedProfile()).thenReturn(profileSwitch.copy(id = 141))
+        completeQueuedProfileSet()
+
+        verify(persistenceLayer, never()).insertOrUpdateEffectiveProfileSwitch(any())
+        assertThat(roundingNotices()).isEmpty()
+        verifyNoPlainOkPosted()
+    }
+
+    // endregion
+
+    // region #5486 - a failed write after an insulin change: the new insulin is in the pump and the old program runs
+
+    /** A new PS whose write ends with [result] while the concentration change is [pending] or not. */
+    private suspend fun writeEndsWith(result: PumpEnactResult, pending: Boolean) {
+        givenActiveEpsFrom(139)
+        testPumpPlugin.isProfileSet = false
+        whenever(profileFunction.isConcentrationChangePending()).thenReturn(pending)
+        rxBus.send(EventProfileChangeRequested())
+        commandQueue.pickup()
+        commandQueue.performing()?.completion?.complete(result)
+        commandQueue.resetPerforming()
+    }
+
+    private fun verifyAlarm(mode: VerificationMode) =
+        verify(uiInteraction, mode).runAlarm(any(), eq("Insulin change failed"), eq(AlarmSound.BOLUS_ERROR))
+
+    @Test
+    fun `a failed write with a concentration change pending raises the alarm over the screen`() = runTest {
+        writeEndsWith(enactResult(isSuccess = false, isEnacted = false), pending = true)
+
+        verifyAlarm(times(1))
+        verify(persistenceLayer, never()).insertOrUpdateEffectiveProfileSwitch(any())
+    }
+
+    /** KeepAlive tries again about every 5 minutes: a dismissed alarm must come back while the write keeps failing. */
+    @Test
+    fun `every failed retry raises the alarm again`() = runTest {
+        writeEndsWith(enactResult(isSuccess = false, isEnacted = false), pending = true)
+        writeEndsWith(enactResult(isSuccess = false, isEnacted = false), pending = true)
+
+        verifyAlarm(times(2))
+    }
+
+    /** The same failure with the same concentration, e.g. a percentage switch: the card only, as before. */
+    @Test
+    fun `a failed write without a concentration change raises no alarm`() = runTest {
+        writeEndsWith(enactResult(isSuccess = false, isEnacted = false), pending = false)
+
+        verifyAlarm(never())
+    }
+
+    /** Dropped on purpose (an import, a cleared queue): no failed update, and KeepAlive sets it again. */
+    @Test
+    fun `a cancelled write raises no alarm`() = runTest {
+        writeEndsWith(pumpEnactResultProvider().success(false).enacted(false).also { it.cancelled = true }, pending = true)
+
+        verifyAlarm(never())
+    }
+
+    @Test
+    fun `a successful write raises no alarm`() = runTest {
+        writeEndsWith(enactResult(isSuccess = true, isEnacted = true), pending = true)
+
+        verifyAlarm(never())
+    }
+
+    // endregion
+
+    // region #2454 - the EPS holds the basal the pump really gives
+
+    private val hour = 1.hours.inWholeMilliseconds
+
+    private suspend fun savedEps(): EPS = argumentCaptor<EPS>().run {
+        verify(persistenceLayer).insertOrUpdateEffectiveProfileSwitch(capture())
+        firstValue
+    }
+
+    /** "Basal profile in pump updated" with the rounding text: the String post, not the plain TextRef one. */
+    private fun roundingNotices(): List<String> = argumentCaptor<String>().run {
+        verify(notificationManager, atLeast(0)).post(
+            eq(NotificationId.PROFILE_SET_OK), capture(), any<NotificationLevel>(), any<Int>(), anyOrNull(), any<List<NotificationAction>>(), anyOrNull()
+        )
+        allValues
+    }
+
+    /** A new PS (id 140) set in a pump that reports [delivered]. */
+    private suspend fun setNewPsInPumpThatGives(delivered: List<ProfileValue>?, event: EventProfileChangeRequested = EventProfileChangeRequested(), enacted: Boolean = true) {
+        givenActiveEpsFrom(139)
+        testPumpPlugin.isProfileSet = false
+        testPumpPlugin.delivered = delivered
+        rxBus.send(event)
+        completeQueuedProfileSet(enacted)
+    }
+
+    /** One notice for one profile switch: the rounding is said in "Basal profile in pump updated", not beside it. */
+    @Test
+    fun `a pump that rounds the basal gets an EPS with the rates it really gives`() = runTest {
+        setNewPsInPumpThatGives(listOf(ProfileValue(0, 0.95), ProfileValue(6 * 3600, 1.0)))
+
+        assertThat(savedEps().basalBlocks).containsExactly(Block(6 * hour, 0.95), Block(18 * hour, 1.0)).inOrder()
+        // The profile asks 1 U/h all day: 24 U. The pump gives 6 * 0.95 + 18 * 1.0 = 23.7 U.
+        assertThat(roundingNotices()).containsExactly(
+            "Basal profile in pump updated. The pump rounds the basal to its own step: it gives ${"%.2f".format(23.7)} U per day instead of ${"%.2f".format(24.0)} U."
+        )
+        verifyNoPlainOkPosted()
+    }
+
+    @Test
+    fun `a pump that gives the profile exactly gets the profile basal and the plain notice`() = runTest {
+        setNewPsInPumpThatGives(null)
+
+        assertThat(savedEps().basalBlocks).isEqualTo(profileSwitch.basalBlocks)
+        assertThat(roundingNotices()).isEmpty()
+        verifyOkPosted()
+    }
+
+    @Test
+    fun `rounding that does not change the insulin per day gives the plain notice`() = runTest {
+        setNewPsInPumpThatGives(listOf(ProfileValue(0, 0.95), ProfileValue(12 * 3600, 1.05)))
+
+        assertThat(savedEps().basalBlocks).containsExactly(Block(12 * hour, 0.95), Block(12 * hour, 1.05)).inOrder()
+        assertThat(roundingNotices()).isEmpty()
+        verifyOkPosted()
+    }
+
+    // #4959 on a Medtronic: a scene ended during a 38 s write, the events queued up, and the write that followed was
+    // made for a Nightscout id arriving, which carries no silent flag. So the scene marks the switch it writes.
+
+    @Test
+    fun `a write of a switch a scene marked posts no notice whichever event led to it`() = runTest {
+        profileSwitchSilentGate.markSilent(140, now)
+
+        setNewPsInPumpThatGives(null)
+
+        assertThat(roundingNotices()).isEmpty()
+        verifyNoPlainOkPosted()
+    }
+
+    @Test
+    fun `a mark for another switch does not make this write silent`() = runTest {
+        profileSwitchSilentGate.markSilent(141, now)
+
+        setNewPsInPumpThatGives(null)
+
+        verifyOkPosted()
+    }
+
+    // A mark lasts as long as the queue waits for one write, so it cannot silence a later write of the same switch,
+    // for example the pump's basal changed by hand hours later.
+    @Test
+    fun `a mark from more than ten minutes ago does not make this write silent`() = runTest {
+        profileSwitchSilentGate.markSilent(140, now - ProfileSwitchSilentGate.SILENT_FOR - 1)
+
+        setNewPsInPumpThatGives(null)
+
+        verifyOkPosted()
+    }
+
+    /** The pump had this basal already (enacted == false): nothing was updated, so nothing is said. */
+    @Test
+    fun `a set the pump did not need posts no notice but gets an EPS`() = runTest {
+        setNewPsInPumpThatGives(listOf(ProfileValue(0, 0.95)), enacted = false)
+
+        assertThat(savedEps().basalBlocks).containsExactly(Block(24 * hour, 0.95))
+        assertThat(roundingNotices()).isEmpty()
+        verifyNoPlainOkPosted()
+    }
+
+    /** The running profile is still the old one (U100) when the new one (U200) has just been set. */
+    @Test
+    fun `the rates are converted with the concentration of the profile that was set`() = runTest {
+        whenever(profileFunction.getRequestedProfile()).thenReturn(profileSwitch.copy(id = 140, iCfg = someICfg.copy(concentration = 2.0)))
+        whenever(persistenceLayer.getEffectiveProfileSwitchActiveAt(anyLong())).thenReturn(effectiveProfileSwitch.copy(id = 311, originalPsId = 139))
+        testPumpPlugin.isProfileSet = false
+        testPumpPlugin.delivered = listOf(ProfileValue(0, 0.5))
+
+        rxBus.send(EventProfileChangeRequested())
+        completeQueuedProfileSet()
+
+        assertThat(savedEps().basalBlocks).containsExactly(Block(24 * hour, 1.0))
+        assertThat(roundingNotices()).isEmpty()
+    }
+
+    @Test
+    fun `a report that does not start at midnight is not used`() = runTest {
+        setNewPsInPumpThatGives(listOf(ProfileValue(3600, 0.9)))
+
+        assertThat(savedEps().basalBlocks).isEqualTo(profileSwitch.basalBlocks)
+        assertThat(roundingNotices()).isEmpty()
+    }
+
+    /** The running profile holds hour values only. */
+    @Test
+    fun `a report with a half hour is not used`() = runTest {
+        setNewPsInPumpThatGives(listOf(ProfileValue(0, 0.9), ProfileValue(1800, 1.0)))
+
+        assertThat(savedEps().basalBlocks).isEqualTo(profileSwitch.basalBlocks)
+    }
+
+    /** One value per hour, as EOPatch reports it, is merged like the profile itself. */
+    @Test
+    fun `hours with the same rate are merged into one block`() = runTest {
+        setNewPsInPumpThatGives((0 until 24).map { hour -> ProfileValue(hour * 3600, if (hour < 6) 0.95 else 1.0) })
+
+        assertThat(savedEps().basalBlocks).containsExactly(Block(6 * hour, 0.95), Block(18 * hour, 1.0)).inOrder()
+    }
+
+    private fun failedUpdateNotices(): List<String> = argumentCaptor<String>().run {
+        verify(notificationManager, atLeast(0)).post(
+            eq(NotificationId.FAILED_UPDATE_PROFILE), capture(), any<NotificationLevel>(), any<Int>(), anyOrNull(), any<List<NotificationAction>>(), anyOrNull()
+        )
+        allValues
+    }
+
+    /**
+     * Seen on the DanaR emulator: a read one byte off gave 130.56 U/h for 0.51. A report that far from the profile is
+     * not a rounding. The EPS must not take it, and the user must check the pump.
+     */
+    @Test
+    fun `a report far from the profile is not used and the user is told to check the pump`() = runTest {
+        setNewPsInPumpThatGives(listOf(ProfileValue(0, 0.0), ProfileValue(3600, 130.56)))
+
+        assertThat(savedEps().basalBlocks).isEqualTo(profileSwitch.basalBlocks)
+        assertThat(failedUpdateNotices()).containsExactly("The pump reports a basal far from the profile. AAPS keeps the profile basal. Check the basal rates in the pump.")
+        // No "updated" beside the alarm.
+        assertThat(roundingNotices()).isEmpty()
+        verifyNoPlainOkPosted()
+    }
+
+    /** One hour far off is enough: the rest of the day does not make up for it. */
+    @Test
+    fun `one hour far from the profile is enough to not use the report`() = runTest {
+        setNewPsInPumpThatGives((0 until 24).map { hour -> ProfileValue(hour * 3600, if (hour == 13) 1.5 else 1.0) })
+
+        assertThat(savedEps().basalBlocks).isEqualTo(profileSwitch.basalBlocks)
+    }
+
+    /** A pump with a coarse step rounds by more than 0.1 U/h: up to its own step is a rounding. */
+    @Test
+    fun `a pump with a coarse step may round by its step`() = runTest {
+        testPumpPlugin.pumpDescription.basalStep = 0.1
+        setNewPsInPumpThatGives(listOf(ProfileValue(0, 0.85)))
+
+        assertThat(savedEps().basalBlocks).containsExactly(Block(24 * hour, 0.85))
+    }
+
+    @Test
+    fun `a report with times out of order is not used`() = runTest {
+        setNewPsInPumpThatGives(listOf(ProfileValue(0, 0.9), ProfileValue(7200, 1.0), ProfileValue(3600, 1.1)))
+
+        assertThat(savedEps().basalBlocks).isEqualTo(profileSwitch.basalBlocks)
+    }
+
+    /**
+     * Issue #4959: a Scene reverting its own ProfileSwitch enacts a real write but must stay silent - no "Basal profile
+     * in pump updated" card, with or without rounding. It still gets its EPS and clears a stale failure.
+     */
+    @Test
+    fun `a set by a scene posts no notice`() = runTest {
+        setNewPsInPumpThatGives(listOf(ProfileValue(0, 0.95)), EventProfileChangeRequested(silent = true))
+
+        assertThat(savedEps().basalBlocks).containsExactly(Block(24 * hour, 0.95))
+        assertThat(roundingNotices()).isEmpty()
+        verifyNoPlainOkPosted()
+        verify(notificationManager).dismiss(NotificationId.FAILED_UPDATE_PROFILE)
+    }
+
+    /** A new pump with another step: the PS is the same, but the EPS must hold what this pump gives. */
+    @Test
+    fun `an effective PS set again gets a new EPS when this pump gives other rates`() = runTest {
+        givenActiveEpsFrom(140)
+        testPumpPlugin.isProfileSet = false
+        testPumpPlugin.delivered = listOf(ProfileValue(0, 0.95))
+
+        rxBus.send(EventProfileChangeRequested())
+        completeQueuedProfileSet()
+
+        assertThat(savedEps().basalBlocks).containsExactly(Block(24 * hour, 0.95))
+    }
+
+    /** Before, the rounded EPS never matched the PS by value, so a profile that was set looked unset for good. */
+    @Test
+    fun `a PS is set when the pump has it and its EPS holds the rounded basal`() = runTest {
+        // Built before whenever(): the constructor reads activePlugin, a mock.
+        val running = ProfileSealed.EPS(effectiveProfileSwitch.copy(originalPsId = 140, basalBlocks = listOf(Block(24 * hour, 0.95))), activePlugin)
+        whenever(profileFunction.getProfile()).thenReturn(running)
+        testPumpPlugin.isProfileSet = true
+
+        assertThat(commandQueue.isThisProfileSet(ProfileSealed.PS(profileSwitch.copy(id = 140), activePlugin))).isTrue()
+        assertThat(commandQueue.isThisProfileSet(ProfileSealed.PS(profileSwitch.copy(id = 141), activePlugin))).isFalse()
+    }
+
     // endregion
 
     // region postProfileWriteResult — the central, driver-agnostic profile-set notification contract.
@@ -354,6 +915,13 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
             anyOrNull(), any<List<NotificationAction>>(), anyOrNull()
         )
 
+    private fun verifyNoPlainOkPosted() =
+        verify(notificationManager, never()).post(
+            eq(NotificationId.PROFILE_SET_OK), any<TextRef>(),
+            any<NotificationLevel>(), any<Int>(), any<Long>(), any<Long>(),
+            anyOrNull(), any<List<NotificationAction>>(), anyOrNull()
+        )
+
     private fun verifyFailurePosted(text: String) =
         verify(notificationManager).post(
             eq(NotificationId.FAILED_UPDATE_PROFILE), eq(text), any<NotificationLevel>(), any<Int>(),
@@ -364,20 +932,21 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
         verify(notificationManager, never()).post(any<NotificationId>(), any<String>(), any<NotificationLevel>(), any<Int>(), anyOrNull(), any<List<NotificationAction>>(), anyOrNull())
 
     @Test
-    fun postProfileWriteResult_updated_postsOkAndClearsFailure() {
-        // profile updated: success=true, enacted=true, not silent → confirmation shown, stale failure cleared.
-
-        val persisted = commandQueue.postProfileWriteResult(enactResult(isSuccess = true, isEnacted = true), silent = false)
+    fun postProfileWriteResult_updated_clearsFailureAndLeavesTheConfirmationToNotifyProfileSet() {
+        // profile updated: success=true, enacted=true → stale failure cleared. The confirmation waits for the basal
+        // the pump gives, so it is posted later by notifyProfileSet, as one notice.
+        val persisted = commandQueue.postProfileWriteResult(enactResult(isSuccess = true, isEnacted = true))
 
         assertThat(persisted).isTrue()
         verify(notificationManager).dismiss(NotificationId.FAILED_UPDATE_PROFILE)
-        verifyOkPosted()
+        verifyNothingPosted()
+        verifyNoPlainOkPosted()
     }
 
     @Test
     fun postProfileWriteResult_alreadySet_isSilentButPersists() {
         // already set (basal unchanged): success=true, enacted=false → no confirmation, but still persist EPS.
-        val persisted = commandQueue.postProfileWriteResult(enactResult(isSuccess = true, isEnacted = false), silent = false)
+        val persisted = commandQueue.postProfileWriteResult(enactResult(isSuccess = true, isEnacted = false))
 
         assertThat(persisted).isTrue()
         verify(notificationManager).dismiss(NotificationId.FAILED_UPDATE_PROFILE)
@@ -388,7 +957,7 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
     fun postProfileWriteResult_notInitialized_isSilentButPersists() {
         // not initialized maps to success=true, enacted=false at the driver — same handling as already-set:
         // no alarm, no confirmation, but the EPS is created so the loop has a profile.
-        val persisted = commandQueue.postProfileWriteResult(enactResult(isSuccess = true, isEnacted = false), silent = false)
+        val persisted = commandQueue.postProfileWriteResult(enactResult(isSuccess = true, isEnacted = false))
 
         assertThat(persisted).isTrue()
         verifyNothingPosted()
@@ -397,7 +966,7 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
     @Test
     fun postProfileWriteResult_error_ringsFailureAlarmAndDoesNotPersist() {
         // any error: success=false → persistent FAILED_UPDATE_PROFILE card rung with boluserror; driver comment surfaces.
-        val persisted = commandQueue.postProfileWriteResult(enactResult(isSuccess = false, isEnacted = false, commentText = "pump rejected"), silent = false)
+        val persisted = commandQueue.postProfileWriteResult(enactResult(isSuccess = false, isEnacted = false, commentText = "pump rejected"))
 
         assertThat(persisted).isFalse()
         verifyFailurePosted("pump rejected")
@@ -406,27 +975,29 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
 
     @Test
     fun postProfileWriteResult_timeout_ringsFailureAlarmWithFallbackText() {
-        // timeout: result == null (deferred pump callback never arrived) → treated as failure, generic fallback text.
+        // timeout: result == null (the command was never completed) → treated as failure, generic fallback text.
         whenever(rh.gs(app.aaps.core.ui.R.string.failed_update_basal_profile)).thenReturn("Failed to update basal profile")
 
-        val persisted = commandQueue.postProfileWriteResult(null, silent = false)
+        val persisted = commandQueue.postProfileWriteResult(null)
 
         assertThat(persisted).isFalse()
         verifyFailurePosted("Failed to update basal profile")
         verify(notificationManager, never()).dismiss(any<NotificationId>())
     }
-
-    @Test
-    fun postProfileWriteResult_silentEnacted_suppressesConfirmation() {
-        // issue #4959: a Scene reverting its own ProfileSwitch enacts a real write but must stay silent —
-        // no "Basal profile in pump updated" card. Still persists and clears any stale failure.
-        val persisted = commandQueue.postProfileWriteResult(enactResult(isSuccess = true, isEnacted = true), silent = true)
-
-        assertThat(persisted).isTrue()
-        verify(notificationManager).dismiss(NotificationId.FAILED_UPDATE_PROFILE)
-        verifyNothingPosted()
-    }
     // endregion
+
+    /** A prime is in pump units, so it gets the priming constraint, not the bolus one that takes insulin units. */
+    @Test
+    fun `a prime is constrained in pump units`() = runTest {
+        whenever(constraintChecker.applyPrimingConstraints(anyOrNull())).thenReturn(PumpInsulin(2.5))
+        val prime = DetailedBolusInfo().apply { insulin = 3.0; bolusType = BS.Type.PRIMING }
+
+        backgroundScope.launch { commandQueue.bolus(prime) }
+        yield()
+
+        assertThat(prime.insulin).isEqualTo(2.5)
+        verify(constraintChecker, never()).applyBolusConstraints(any())
+    }
 
     @Test
     fun doTests() = runTest {
@@ -526,17 +1097,147 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
         val smb = DetailedBolusInfo()
         smb.lastKnownBolusTime = System.currentTimeMillis()
         smb.bolusType = BS.Type.SMB
+        // A manual bolus drops a queued SMB, so the two are never queued together: one at a time
         backgroundScope.launch { commandQueue.bolus(smb) }
         yield()
+        assertThat(commandQueue.size()).isEqualTo(1)
+        commandQueue.cancelAllBoluses(null)
+        assertThat(commandQueue.size()).isEqualTo(0)
+
         backgroundScope.launch { commandQueue.bolus(DetailedBolusInfo()) }
         yield()
-        assertThat(commandQueue.size()).isEqualTo(2)
-
-        // when
+        assertThat(commandQueue.size()).isEqualTo(1)
         commandQueue.cancelAllBoluses(null)
-
-        // then
         assertThat(commandQueue.size()).isEqualTo(0)
+    }
+
+    /** #4546: the SMB did not count the manual bolus, and the manual bolus did not count the SMB. */
+    @Test
+    fun `a manual bolus drops a queued SMB`() = runTest {
+        var smbResult: PumpEnactResult? = null
+        val smb = DetailedBolusInfo().apply {
+            bolusType = BS.Type.SMB
+            lastKnownBolusTime = System.currentTimeMillis()
+        }
+        backgroundScope.launch { smbResult = commandQueue.bolus(smb) }
+        yield()
+        assertThat(commandQueue.size()).isEqualTo(1)
+
+        backgroundScope.launch { commandQueue.bolus(DetailedBolusInfo().apply { insulin = 1.0 }) }
+        yield() // the manual bolus drops the SMB
+        yield() // the SMB caller resumes with its result
+
+        assertThat(commandQueue.size()).isEqualTo(1)
+        commandQueue.pickup()
+        assertThat(commandQueue.performing()?.commandType).isEqualTo(Command.CommandType.BOLUS)
+        assertThat(smbResult).isNotNull()
+        assertThat(smbResult!!.success).isFalse()
+        // Not a delivery failure: the loop runs again, and no bolus error alarm
+        assertThat(smbResult!!.cancelled).isTrue()
+        // The progress belongs to the manual bolus now
+        assertThat(bolusProgressData.state.value?.isSMB).isFalse()
+    }
+
+    /**
+     * #4546: an SMB that is being delivered cannot be dropped. Queued behind it, the manual bolus would share
+     * the progress state with the SMB, so it is refused and the SMB is left alone.
+     */
+    @Test
+    fun `a manual bolus is refused while an SMB is being delivered`() = runTest {
+        var smbResult: PumpEnactResult? = null
+        val smb = DetailedBolusInfo().apply {
+            bolusType = BS.Type.SMB
+            lastKnownBolusTime = System.currentTimeMillis()
+        }
+        backgroundScope.launch { smbResult = commandQueue.bolus(smb) }
+        yield()
+        commandQueue.pickup()
+
+        val manual = commandQueue.bolus(DetailedBolusInfo().apply { insulin = 1.0 })
+
+        assertThat(manual.success).isFalse()
+        // No insulin was given: the user is told, but it is not a delivery error alarm
+        assertThat(manual.cancelled).isTrue()
+        assertThat(commandQueue.size()).isEqualTo(0)
+        assertThat(commandQueue.performing()?.commandType).isEqualTo(Command.CommandType.SMB_BOLUS)
+        assertThat(smbResult).isNull()
+        assertThat(bolusProgressData.state.value?.isSMB).isTrue()
+    }
+
+    // ---- #5381: the bolus screens see an SMB being delivered, and no SMB starts while a bolus is confirmed ----
+
+    @Test
+    fun `smbBeingDelivered is true only while an SMB is the running command`() = runTest {
+        val smb = DetailedBolusInfo().apply {
+            bolusType = BS.Type.SMB
+            lastKnownBolusTime = System.currentTimeMillis()
+        }
+        backgroundScope.launch { commandQueue.bolus(smb) }
+        yield()
+        // Waiting in the queue: it can still be dropped, so nothing waits for it.
+        assertThat(commandQueue.smbBeingDelivered.value).isFalse()
+
+        commandQueue.pickup()
+        assertThat(commandQueue.smbBeingDelivered.value).isTrue()
+
+        commandQueue.resetPerforming()
+        assertThat(commandQueue.smbBeingDelivered.value).isFalse()
+    }
+
+    @Test
+    fun `no SMB is queued while a bolus is waiting for confirmation`() = runTest {
+        val pause = smbPause.begin()
+        val smb = DetailedBolusInfo().apply {
+            bolusType = BS.Type.SMB
+            lastKnownBolusTime = System.currentTimeMillis()
+        }
+
+        val refused = commandQueue.bolus(smb)
+
+        assertThat(refused.success).isFalse()
+        assertThat(refused.enacted).isFalse()
+        assertThat(commandQueue.size()).isEqualTo(0)
+
+        // Confirmed or dropped: SMBs are queued again.
+        smbPause.end(pause)
+        backgroundScope.launch { commandQueue.bolus(smb) }
+        yield()
+        assertThat(commandQueue.size()).isEqualTo(1)
+    }
+
+    @Test
+    fun `dropWaitingSmb drops a waiting SMB and tells the loop it was not given`() = runTest {
+        var smbResult: PumpEnactResult? = null
+        val smb = DetailedBolusInfo().apply {
+            bolusType = BS.Type.SMB
+            lastKnownBolusTime = System.currentTimeMillis()
+        }
+        backgroundScope.launch { smbResult = commandQueue.bolus(smb) }
+        yield()
+        assertThat(commandQueue.size()).isEqualTo(1)
+
+        commandQueue.dropWaitingSmb()
+        yield()
+
+        assertThat(commandQueue.size()).isEqualTo(0)
+        assertThat(smbResult!!.success).isFalse()
+        // Not a delivery failure: the loop runs again with a temp basal, and no alarm rings
+        assertThat(smbResult!!.cancelled).isTrue()
+    }
+
+    @Test
+    fun `dropWaitingSmb leaves an SMB that is being delivered alone`() = runTest {
+        val smb = DetailedBolusInfo().apply {
+            bolusType = BS.Type.SMB
+            lastKnownBolusTime = System.currentTimeMillis()
+        }
+        backgroundScope.launch { commandQueue.bolus(smb) }
+        yield()
+        commandQueue.pickup()
+
+        commandQueue.dropWaitingSmb()
+
+        assertThat(commandQueue.isRunning(Command.CommandType.SMB_BOLUS)).isTrue()
     }
 
     @Test
@@ -856,7 +1557,7 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
     //
     // These verify the queue rejects commands when the active running mode forbids them.
     // The gate itself is exhaustively tested in PumpCommandGateTest; here we only verify the queue
-    // calls the gate and propagates its decision to the callback.
+    // calls the gate and returns its decision to the caller.
 
     @Test
     fun `tempBasalAbsolute non-zero is rejected during DISCONNECTED_PUMP`() = runTest {
@@ -881,6 +1582,19 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
         val info = DetailedBolusInfo().also { it.insulin = 1.0 }
         val result = commandQueue.bolus(info)
         assertThat(result.success).isFalse()
+    }
+
+    /** A prime goes into the air, and the user primes exactly while the pump is disconnected (#5469). */
+    @Test
+    fun `prime is queued during DISCONNECTED_PUMP`() = runTest {
+        stubActiveMode(RM.Mode.DISCONNECTED_PUMP)
+        whenever(constraintChecker.applyPrimingConstraints(anyOrNull())).thenReturn(PumpInsulin(0.5))
+        val prime = DetailedBolusInfo().apply { insulin = 0.5; bolusType = BS.Type.PRIMING }
+
+        backgroundScope.launch { commandQueue.bolus(prime) }
+        yield()
+
+        assertThat(commandQueue.bolusInQueue()).isTrue()
     }
 
     @Test
@@ -1135,8 +1849,57 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
         verify(persistenceLayer, never()).insertOrUpdateCarbs(anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull())
     }
 
+    // ---- the eCarbs of a meal are stored exactly when its carbs are (#5491) ----
+
+    /** 80 g now and 35 g of eCarbs from +60 min for 3 h, as a pizza in the wizard. */
+    private fun meal(insulin: Double) = DetailedBolusInfo().apply {
+        this.insulin = insulin
+        carbs = 80.0
+        eCarbs = ECarbs(grams = 35, timestamp = 1_700_003_600_000L, durationHours = 3, delayMinutes = 60)
+    }
+
+    /** They used to be stored before the pump answered, so a failed bolus left them alone in the database. */
+    @Test
+    fun `eCarbs are not persisted when the bolus was dropped`() = runTest {
+        backgroundScope.launch { commandQueue.bolus(meal(insulin = 1.0)) }
+        yield()
+        // Or the check below would pass without a bolus ever being queued
+        assertThat(commandQueue.bolusInQueue()).isTrue()
+
+        commandQueue.cancelAll(TextRef.Literal("pump not configured"), success = false)
+        yield()
+
+        verify(persistenceLayer, never()).insertOrUpdateCarbs(anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull())
+    }
+
+    @Test
+    fun `eCarbs are stored with the carbs after a successful bolus`() = runTest {
+        useRealExecutor()
+
+        val result = bolusOnRealThreads(meal(insulin = 1.0))
+
+        assertThat(result?.success).isTrue()
+        val stored = argumentCaptor<CA>()
+        verify(persistenceLayer, times(2)).insertOrUpdateCarbs(stored.capture(), anyOrNull(), anyOrNull(), anyOrNull())
+        assertThat(stored.allValues.map { it.amount }).containsExactly(80.0, 35.0).inOrder()
+    }
+
+    /** No insulin, nothing for the pump: both are stored at once, and the eCarbs keep their own time and duration. */
+    @Test
+    fun `a carbs-only entry stores its eCarbs at once with the carbs`() = runTest {
+        val result = commandQueue.bolus(meal(insulin = 0.0))
+
+        assertThat(result.success).isTrue()
+        val stored = argumentCaptor<CA>()
+        verify(persistenceLayer, times(2)).insertOrUpdateCarbs(stored.capture(), anyOrNull(), anyOrNull(), anyOrNull())
+        assertThat(stored.firstValue.amount).isEqualTo(80.0)
+        assertThat(stored.secondValue.amount).isEqualTo(35.0)
+        assertThat(stored.secondValue.timestamp).isEqualTo(1_700_003_600_000L)
+        assertThat(stored.secondValue.duration).isEqualTo(3 * 3_600_000L)
+    }
+
     /**
-     * Dropping is not failing. The alarm in `WizardBolusExecutorImpl` fires on `!success`, so
+     * Dropping is not failing. The alarm in `MasterActionExecutorImpl` fires on `!success`, so
      * without this flag the import would start raising BOLUS_DELIVERY_FAILED where nothing failed -
      * the same reason a bolus the user stopped does not alarm.
      */
@@ -1179,6 +1942,68 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
         assertThat(result!!.success).isFalse()
         assertThat(result!!.cancelled).isFalse()
     }
+
+    // region stuck command alarm (#5209)
+
+    private fun verifyDriverAlarm(mode: VerificationMode) =
+        verify(notificationManager, mode).post(eq(NotificationId.PUMP_DRIVER_NOT_RESPONDING), any<String>(), any(), any<Int>(), anyOrNull(), any(), anyOrNull())
+
+    @Test
+    fun `a command still running after 30 minutes raises the driver alarm and finishing it dismisses the alarm`() = runTest {
+        val queue = newQueue(backgroundScope)
+        backgroundScope.launch { queue.readStatus("test") }
+        runCurrent()
+        queue.pickup()
+        val command = checkNotNull(queue.performing())
+
+        advanceTimeBy(29.minutes)
+        runCurrent()
+        verifyDriverAlarm(never())
+
+        advanceTimeBy(2.minutes)
+        runCurrent()
+        verifyDriverAlarm(times(1))
+        verify(notificationManager, never()).dismiss(NotificationId.PUMP_DRIVER_NOT_RESPONDING)
+
+        command.completion.complete(enactResult(isSuccess = true, isEnacted = false))
+        runCurrent()
+        verify(notificationManager).dismiss(NotificationId.PUMP_DRIVER_NOT_RESPONDING)
+    }
+
+    @Test
+    fun `a command that finishes in time raises no driver alarm`() = runTest {
+        val queue = newQueue(backgroundScope)
+        backgroundScope.launch { queue.readStatus("test") }
+        runCurrent()
+        queue.pickup()
+        val command = checkNotNull(queue.performing())
+
+        advanceTimeBy(10.minutes)
+        command.completion.complete(enactResult(isSuccess = true, isEnacted = false))
+        advanceTimeBy(60.minutes)
+        runCurrent()
+
+        verifyDriverAlarm(never())
+        verify(notificationManager, never()).dismiss(NotificationId.PUMP_DRIVER_NOT_RESPONDING)
+    }
+
+    /** A drain clears `performing` while the command is still running. The alarm must still come. */
+    @Test
+    fun `a drain while a command is stuck does not hide the driver alarm`() = runTest {
+        val queue = newQueue(backgroundScope)
+        backgroundScope.launch { queue.readStatus("test") }
+        runCurrent()
+        queue.pickup()
+
+        queue.cancelAll(CoreUiStrings.connectiontimedout, success = false)
+        assertThat(queue.performing()).isNull()
+        advanceTimeBy(31.minutes)
+        runCurrent()
+
+        verifyDriverAlarm(times(1))
+    }
+
+    // endregion
 
     /**
      * #5193: cancelAllBoluses went through removeAll, which reports success because it is meant for a
@@ -1224,7 +2049,7 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
     }
 
     /**
-     * The drain used to call the callback directly, so `CommandBolus.cancel` never ran and the
+     * The drain used to complete the caller directly, so `CommandBolus.cancel` never ran and the
      * bolus progress it owns was left running with nothing to finish it.
      */
     @Test

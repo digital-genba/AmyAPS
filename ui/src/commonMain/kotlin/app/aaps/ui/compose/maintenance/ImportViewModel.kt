@@ -3,45 +3,45 @@ package app.aaps.ui.compose.maintenance
 import androidx.compose.runtime.Stable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.aaps.core.data.ue.Action
 import app.aaps.core.data.ue.Sources
+import app.aaps.core.interfaces.concurrent.aapsIoDispatcher
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.configuration.ConfigBuilder
 import app.aaps.core.interfaces.configuration.whileReconfiguring
-import app.aaps.core.data.ue.Action
-import app.aaps.core.interfaces.concurrent.aapsIoDispatcher
 import app.aaps.core.interfaces.iob.IobCobCalculator
-import app.aaps.core.interfaces.overview.graph.OverviewDataCache
-import app.aaps.core.interfaces.notifications.NotificationId
-import app.aaps.core.interfaces.notifications.NotificationManager
-import app.aaps.core.interfaces.plugin.ActivePlugin
-import app.aaps.core.interfaces.profile.ProfileRepository
-import app.aaps.core.interfaces.pump.PumpSync
-import app.aaps.core.interfaces.pump.VirtualPump
-import app.aaps.core.interfaces.logging.UserEntryLogger
-import app.aaps.core.interfaces.resources.TextResolver
-import app.aaps.core.interfaces.queue.CommandQueue
-import app.aaps.core.interfaces.ui.UiRestart
-import app.aaps.core.ui.CoreUiStrings
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlin.time.Duration.Companion.seconds
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
-import app.aaps.core.interfaces.maintenance.PrefsFileInfo
+import app.aaps.core.interfaces.logging.UserEntryLogger
 import app.aaps.core.interfaces.maintenance.ImportDecryptResult
 import app.aaps.core.interfaces.maintenance.ImportExportPrefs
 import app.aaps.core.interfaces.maintenance.Prefs
 import app.aaps.core.interfaces.maintenance.PrefsFile
+import app.aaps.core.interfaces.maintenance.PrefsFileInfo
+import app.aaps.core.interfaces.notifications.NotificationId
+import app.aaps.core.interfaces.notifications.NotificationManager
+import app.aaps.core.interfaces.overview.graph.OverviewDataCache
+import app.aaps.core.interfaces.plugin.ActivePlugin
+import app.aaps.core.interfaces.profile.ProfileRepository
+import app.aaps.core.interfaces.pump.PumpSync
+import app.aaps.core.interfaces.pump.VirtualPump
+import app.aaps.core.interfaces.queue.CommandQueue
+import app.aaps.core.interfaces.resources.TextResolver
+import app.aaps.core.interfaces.ui.UiRestart
+import app.aaps.core.ui.CoreUiStrings
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.ContributesIntoMap
 import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.binding
 import dev.zacsweers.metrox.viewmodel.ViewModelKey
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.time.Duration.Companion.seconds
 
 enum class ImportSource { LOCAL, CLOUD, BOTH }
 
@@ -418,15 +418,34 @@ class ImportViewModel(
      * chose, delivering nothing, with nothing on screen to say so. The notification names what is
      * active now, because "no pump selected" is not what happened and would send them looking for
      * the wrong thing.
+     *
+     * Both pumps are the drivers themselves (`activePumpInternal`). `activePump` is the concentration
+     * wrapper, which is never a [VirtualPump], so the check could never fire.
      */
     private fun notifyIfPumpFellBackToVirtual(pumpBefore: Any) {
-        val pumpNow = activePlugin.activePump
+        val pumpNow = activePlugin.activePumpInternal
         if (pumpNow !is VirtualPump || pumpBefore is VirtualPump) return
         notificationManager.post(
             id = NotificationId.WRONG_DRIVER,
             text = rh.gs(CoreUiStrings.import_pump_fell_back, pumpNow.pumpDescription.pumpType.description)
         )
         aapsLogger.warn(LTag.CORE, "Import left no pump selected; the virtual pump is active")
+    }
+
+    /**
+     * Says which insulin a 3.x backup brought, and that it is not in use yet.
+     *
+     * The import adds it to the insulin list but does not switch to it: that would be a profile switch,
+     * a therapy change the user did not confirm. Without this message the backup's insulin sat in the list
+     * unnoticed while the install's default curve ran - and Nightscout gives downloaded treatments that have
+     * no insulin of their own the RUNNING one, so the order of the next steps matters.
+     */
+    private fun notifyImportedInsulin(labels: List<String>) {
+        if (labels.isEmpty()) return
+        notificationManager.post(
+            id = NotificationId.IMPORTED_INSULIN_ADDED,
+            text = rh.gs(CoreUiStrings.import_insulin_added, labels.joinToString())
+        )
     }
 
     /**
@@ -521,13 +540,14 @@ class ImportViewModel(
                         // Medtronic's serial, `UseExtended` - react by talking to the pump; inside the
                         // hold that command queues behind the apply instead of racing it.
                         // Which pump was in charge BEFORE, so the fallback below can be spotted.
-                        val pumpBefore = activePlugin.activePump
-                        config.whileReconfiguring {
+                        val pumpBefore = activePlugin.activePumpInternal
+                        val outcome = config.whileReconfiguring {
                             importExportPrefs.executeImport(confirmed.prefs, confirmed.keepPumpSettings)
-                            importExportPrefs.prepareImportedSettings()
+                                .also { importExportPrefs.prepareImportedSettings() }
                         }
                         applySettings()
                         notifyIfPumpFellBackToVirtual(pumpBefore)
+                        notifyImportedInsulin(outcome.importedInsulins)
                         // Every plugin in THIS build now has an explicit stored enabled value, rather
                         // than an absent one that the next start would fill from a default. The file
                         // cannot name plugins it never had, so without this an import from a smaller

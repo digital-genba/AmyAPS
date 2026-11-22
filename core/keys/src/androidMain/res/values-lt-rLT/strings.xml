@@ -32,7 +32,7 @@
     <string name="pref_title_alert_urgent_as_android_notification">Rodyti skubius įspėjimus kaip Android pranešimus</string>
     <string name="pref_title_alert_increase_volume">Palaipsniui didinti pranešimų garsumą</string>
     <string name="pref_title_alert_override_dnd">Nepaisyti netrukdymo režimo</string>
-    <string name="pref_summary_alert_override_dnd">Įjungus šią parinktį AAPS įspėjimai skambės net nutildžius telefoną arba įjungus netrukdymo režimą. Išjungus parinktį šiais režimais įspėjimai bus be garso.</string>
+    <string name="pref_summary_alert_override_dnd">Įjungta: aliarmai skamba, net kai telefonas nutildytas arba įjungtas netrukdymo režimas. Išjungta: tada aliarmai neskamba. Netrukdymo režimu jie tik vibruoja.</string>
     <!-- BG Source preferences -->
     <string name="pref_title_bg_source_upload_to_ns">Įkelti glikemijos duomenis į NS</string>
     <string name="pref_title_bg_source_create_sensor_change">Įrašyti jutiklio pakeitimą</string>
@@ -51,7 +51,7 @@
     <string name="pref_summary_aps_use_smb_with_cob">Naudoti SMB, tik kai yra aktyvių angliavandenių.</string>
     <string name="pref_title_aps_use_smb_with_low_tt">Naudoti SMB esant žemesniam laikinam gliukozės tikslui</string>
     <string name="pref_summary_aps_use_smb_with_low_tt">Naudoti SMB, kai aktyvus žemas laikinas tikslas.</string>
-    <string name="pref_title_aps_use_smb_after_carbs">Naudoti SMB, kai AV jau pasisavinti</string>
+    <string name="pref_title_aps_use_smb_after_carbs">Naudoti SMB po angliavandenių</string>
     <string name="pref_summary_aps_use_smb_after_carbs">Naudoti SMB tam tikrą laiką po angliavandenių įvedimo.</string>
     <string name="pref_title_aps_use_uam">Naudoti NDM</string>
     <string name="pref_summary_aps_use_uam">Naudoti nedeklaruoto maisto (NDM) aptikimo ir koregavimo funkciją.</string>
@@ -94,7 +94,7 @@
     <!-- NS Client preferences -->
     <string name="pref_title_ns_upload_data">Įkelti duomenis į NS</string>
     <string name="pref_summary_ns_upload_data">Įkelti terapijos įrašus, laikinas bazes ir kitus duomenis į Nightscout.</string>
-    <string name="pref_title_ns_receive_cgm">Gauti CGM duomenis iš NS</string>
+    <string name="pref_title_ns_receive_cgm">Gauti NGJ duomenis iš NS</string>
     <string name="pref_summary_ns_receive_cgm">Priimti CGM rodmenis iš Nightscout.</string>
     <string name="pref_title_ns_receive_profile_store">Gauti profilius iš NS</string>
     <string name="pref_summary_ns_receive_profile_store">Priimti profilių saugyklos naujinius iš Nightscout.</string>
@@ -126,7 +126,7 @@
     <string name="pref_title_ns_use_ws">Naudoti WebSocket</string>
     <string name="pref_summary_ns_use_ws">Naudoti WebSocket realiojo laiko ryšiui su Nightscout.</string>
     <string name="pref_title_ns_allow_client_control">Leisti valdyti iš kliento</string>
-    <string name="pref_summary_ns_allow_client_control">Leisti susietiems kliento įrenginiams per Nightscout siųsti pasirašytas komandas (pvz., paleisti ar sustabdyti scenarijus).</string>
+    <string name="pref_summary_ns_allow_client_control">Leisti susietiems klientų įrenginiams siųsti pasirašytas komandas per Nightscout, pavyzdžiui, paleisti ar sustabdyti scenarijus. Įjungus šią parinktį taip pat aktyvuojamas sustiprintos apsaugos režimas – tiesiogiai Nightscout atlikti pakeitimai nebebus priimami.</string>
     <!-- OpenHumans preferences -->
     <string name="pref_title_openhumans_wifi_only">Tik per Wi‑Fi</string>
     <string name="pref_title_openhumans_charging_only">Tik įkraunant</string>
@@ -139,7 +139,7 @@
     <!-- Wear preferences -->
     <string name="pref_title_wear_control">Valdymas per Wear</string>
     <string name="pref_summary_wear_control">Valdyti AAPS iš „Android Wear“ laikrodžio.</string>
-    <string name="pref_title_wear_wizard_bg">Įtraukti glikemiją į boluso skaičiuoklę</string>
+    <string name="pref_title_wear_wizard_bg">Įtraukti glikemiją į boluso skaičiuotuvą</string>
     <string name="pref_title_wear_wizard_tt">Įtraukti laikiną tikslą į skaičiuotuvą</string>
     <string name="pref_title_wear_wizard_trend">Įtraukti tendenciją į skaičiuotuvą</string>
     <string name="pref_title_wear_wizard_cob">Įtraukti AAO į skaičiuotuvą</string>
@@ -176,8 +176,8 @@
     <string name="pref_title_batt_critical">Kritinė pompos baterijos lygio riba</string>
     <string name="pref_title_bolus_percentage">Boluso procentas</string>
     <string name="deliverpartofboluswizard">Taikyti šią reikšmę gliukozės ir angliavandenių korekcijai boluso skaičiuotuvo rezultate.</string>
-    <string name="pref_title_reset_bolus_percentage_time">Laikas iki boliuso procento atkūrimo</string>
-    <string name="deliver_part_of_boluswizard_reset_time">Suleisti 100% bolusą, jei glikemijos duomenys senesni nei</string>
+    <string name="pref_title_reset_bolus_percentage_time">Laikas iki boluso procento atkūrimo</string>
+    <string name="deliver_part_of_boluswizard_reset_time">Suleisti visą bolusą (100%), jei KG reikšmė senesnė nei</string>
     <!-- IntKey: Protection preferences -->
     <string name="pref_title_protection_timeout">Laikas iki pakartotinio užrakinimo</string>
     <string name="pref_title_protection_type_application">0 lygis: programos apsauga</string>
@@ -203,7 +203,7 @@
     <string name="pref_title_uam_smb_max_minutes">Maksimalus bazės minučių skaičius NDM SMB ribai</string>
     <string name="uam_smb_max_minutes">NDM SMB maks. minutės</string>
     <string name="pref_title_carbs_request_threshold">Angliavandenių poreikio riba</string>
-    <string name="carbs_req_threshold_summary">Minimalus angliavandenių kiekis gramais, apie kurį reikia įspėti. Angliavandenių pasiūlymai, mažesni už šį kiekį, nebus pranešami.</string>
+    <string name="carbs_req_threshold_summary">Mažiausias angliavandenių kiekis gramais, nuo kurio rodomas siūlymas suvartoti angliavandenių. Jei siūlomas kiekis mažesnis už šią reikšmę, pranešimas nebus rodomas.</string>
     <string name="pref_title_half_basal_exercise_target">Sporto laikinas tikslas, kurį įjungus bazė mažinama perpus</string>
     <string name="half_basal_exercise_target_summary">Nustatykite skaičių, pvz., 8,0, kuris reiškia, kad kai laikinas tikslas yra 8,0 mmol/l ir aukštas laikinas tikslas padidina jautrumą = TAIP, nustatykite 50%% laikiną bazę šiame lygyje (6,0 = 75%%; 4,8 = 60%%).</string>
     <string name="pref_title_iob_threshold_percent">AIO ribos procentas</string>
@@ -213,7 +213,7 @@
     <string name="pref_title_autosens_period">Autosens laikotarpis</string>
     <string name="openapsama_autosens_period_summary">Valandų skaičius praeityje jautrumo nustatymui (angliavandenių įsisavinimo laikas neįtrauktas)</string>
     <!-- IntKey: Maintenance preferences -->
-    <string name="pref_title_logs_amount">Siunčiamų įrašų skaičius</string>
+    <string name="pref_title_logs_amount">Siunčiamų žurnalų skaičius</string>
     <!-- IntKey: Alert preferences -->
     <string name="pref_title_stale_data_threshold">Pasenusių duomenų riba</string>
     <string name="pref_title_pump_unreachable_threshold">Perspėjimo apie nepasiekiamą pompą riba</string>
@@ -240,35 +240,9 @@
     <string name="pref_title_units">Vienetai</string>
     <!-- Formatted unit strings with value only -->
     <!-- Formatted unit strings with value and range -->
-    <string name="pref_title_language">Kalba</string>
     <string name="lang_default">Sistemos numatytoji</string>
-    <string name="lang_en">English</string>
-    <string name="lang_af">Afrikaans</string>
-    <string name="lang_bg">Bulgarian</string>
-    <string name="lang_cs">Czech</string>
-    <string name="lang_de">German</string>
-    <string name="lang_dk">Danish</string>
-    <string name="lang_fr">French</string>
-    <string name="lang_nl">Dutch</string>
-    <string name="lang_es">Spanish</string>
-    <string name="lang_el">Greek</string>
-    <string name="lang_ga">Irish</string>
-    <string name="lang_it">Italian</string>
-    <string name="lang_ko">Korean</string>
-    <string name="lang_lt">Lietuvių</string>
-    <string name="lang_nb">Norwegian</string>
-    <string name="lang_pl">Polish</string>
-    <string name="lang_pt">Portuguese</string>
-    <string name="lang_pt_br">Portuguese, Brazilian</string>
-    <string name="lang_ro">Romanian</string>
-    <string name="lang_ru">Russian</string>
-    <string name="lang_sk">Slovak</string>
-    <string name="lang_sv">Swedish</string>
-    <string name="lang_tr">Turkish</string>
-    <string name="lang_zh_tw">Chinese, Traditional</string>
-    <string name="lang_zh_cn">Chinese, Simplified</string>
     <string name="pref_title_patient_name">Vardas</string>
-    <string name="pref_summary_patient_name">Pavadinimas šiai AAPS sistemai atpažinti (rodomas ataskaitose ir sinchronizuojant).</string>
+    <string name="pref_summary_patient_name">Šį telefoną naudojančio asmens vardas. Jis padeda atskirti šią AAPS sistemą ataskaitose ir sinchronizuojant.</string>
     <!-- StringKey: Directory preferences -->
     <string name="pref_title_aaps_directory">AAPS aplankas</string>
     <!-- StringKey: Protection preferences -->
@@ -296,10 +270,10 @@
     <string name="automation_location_network">Nustatyti vietą pagal tinklą</string>
     <string name="automation_location_gps">Nustatyti vietą naudojant GPS</string>
     <!-- StringKey: SMS preferences -->
-    <string name="smscommunicator_allowednumbers">Patvirtinti telefono numeriai</string>
+    <string name="smscommunicator_allowednumbers">Leidžiami telefono numeriai</string>
     <string name="smscommunicator_allowednumbers_summary">+370XXXXXXXX; +370YYYYYYYY</string>
     <string name="smscommunicator_otp_pin">Papildomas privalomas PIN kodas žymeklio gale</string>
-    <string name="smscommunicator_otp_pin_summary">Papildomi skaitmenys, kuriuos reikia atsiminti ir pridėti kiekvieno sugeneruoto slaptažodžio pabaigoje</string>
+    <string name="smscommunicator_otp_pin_summary">Papildomi skaitmenys, kuriuos reikia atsiminti ir pridėti kiekvieno sugeneruoto vienkartinio slaptažodžio pabaigoje</string>
     <!-- StringKey: Virtual pump preferences -->
     <string name="pref_title_virtual_pump_type">Pompos tipas</string>
     <!-- StringKey: NS Client preferences -->
@@ -322,18 +296,19 @@
     <string name="pref_title_fill_button_3">3-ias užpildymo mygtukas</string>
     <!-- DoubleKey: Safety preferences -->
     <string name="pref_title_max_bolus">Didžiausias bolusas</string>
+    <string name="treatmentssafety_maxbolus_summary">Šią reikšmę riboja pasirinktas naudotojo amžius. Didesnė reikšmė čia neturi jokio poveikio.</string>
     <!-- DoubleKey: APS preferences -->
     <string name="pref_title_max_basal">Didžiausia valandinė bazė</string>
-    <string name="openapsma_max_basal_summary">Šis skaičius OpenAPS kontekste vadinamas maks. valandine baze</string>
+    <string name="openapsma_max_basal_summary">Šis skaičius OpenAPS kontekste vadinamas maks. valandine baze\nŠią reikšmę riboja pasirinktas naudotojo amžius. Didesnė reikšmė čia neturi jokio poveikio.</string>
     <string name="pref_title_smb_max_iob">Didžiausias AIO naudojant SMB</string>
-    <string name="openapssmb_max_iob_summary">Ši reikšmė vadinama maks AIO\nAAPS neskirs papildomai insulino, jei dabartinis aktyvus insulinas (AIO) yra didesnis už šią reikšmę. Šiai ribai įtakos turi ir pasirinktas naudotojo tipas.</string>
+    <string name="openapssmb_max_iob_summary">OpenAPS kontekste ši reikšmė vadinama maks. AIO\nOpenAPS neskirs papildomai insulino, jei dabartinis aktyvus insulinas (AIO) yra didesnis už šią reikšmę.\nŠią reikšmę riboja pasirinktas naudotojo amžius. Didesnė reikšmė čia neturi jokio poveikio.</string>
     <string name="pref_title_ama_max_iob">Didžiausias AIO naudojant AMA</string>
-    <string name="openapsma_max_iob_summary">Ši reikšmė vadinama maks AIO\nTai didžiausias insulino kiekis [V], kurį AAPS gali suleisti vienu metu. Šiai ribai įtakos turi ir pasirinktas naudotojo tipas.</string>
+    <string name="openapsma_max_iob_summary">OpenAPS kontekste ši reikšmė vadinama maks. AIO\nTai didžiausias insulino kiekis [V], kurį APS gali suleisti vienu metu.\nŠią reikšmę riboja pasirinktas naudotojo amžius. Didesnė reikšmė čia neturi jokio poveikio.</string>
     <string name="pref_title_max_daily_multiplier">Didžiausias paros saugos daugiklis</string>
-    <string name="openapsama_max_daily_safety_multiplier_summary">Numatytoji reikšmė: 3 tai pagrindinis OpenAPS saugiklis. Jis apriboja Jūsų valandinę bazę iki trigubos maksimalios valandinės bazės (standartiniu atveju). Jums greičiausiai neprireiks šios reikšmės keisti, tačiau turėtumėte žinoti, kad ji naudojama kaip saugiklis apskaičiuojant \"3x maksimali dienos bazė; 4x dabartinė valandinė bazė\".</string>
+    <string name="openapsama_max_daily_safety_multiplier_summary">Numatytoji reikšmė: 3. Tai pagrindinis OpenAPS saugiklis. Jis apriboja jūsų valandinę bazę iki 3 kartų didžiausios jūsų valandinės bazės. Greičiausiai šios reikšmės keisti nereikės, tačiau turėtumėte žinoti, kad tai yra saugiklis, aptariamas kaip „3x max daily; 4x current“.</string>
     <string name="pref_title_current_basal_multiplier">Dabartinės bazės saugos daugiklis</string>
     <string name="openapsama_current_basal_safety_multiplier_summary">Numatytoji reikšmė: 4 tai antras pagrindinis OpenAPS saugiklis, apskaičiuojant \"3x maksimali dienos bazė; 4x dabartinė valandinė bazė\". Jis reiškia, kad jūsų valandinė bazė, nepriklausomai nuo to, kokia maksimali valandinė bazė suprogramuota pompoje, negali būti didesnė, nei keturguba dabartinė valandinė bazė. Tai apsaugo Jus nuo pavojingų situacijų, kai nustatoma pernelyg didelė valandinė bazė, pilnai nesuprantant, kaip veikia algoritmas. Numatytoji reikšmė yra 4x; daugumai vartotojų niekada neprireikia šio skaičiaus keisti, o pajutus, kad \"atsitrenkiama\" į saugiklį, rekomenduojama peržiūrėti kitus nustatymus.</string>
-    <string name="pref_title_bolus_snooze_divisor">IVT daliklis laikotarpiui po boliuso</string>
+    <string name="pref_title_bolus_snooze_divisor">IVT daliklis laikotarpiui po boluso</string>
     <string name="openapsama_bolus_snooze_dia_divisor_summary">Numatytoji reikšmė: 2\nAtidėjimas po boluso aktyvuojamas iškart po to, kai susileidžiate bolusą maistui. Ši funkcija neleidžia sistemai nustatyti mažų laikinų bazių iškart po valgio. Pvz.: jei IVT yra 3 val, tai atidėjimas po boluso pamažu deaktyvuojamas per 1,5 val (3 val. / 2).</string>
     <string name="pref_title_ama_min_5m_carbs_impact">AMA minimalus 5 min angliavandenių poveikis</string>
     <string name="pref_title_smb_min_5m_carbs_impact">SMB minimalus 5 min angliavandenių poveikis</string>
@@ -341,7 +316,7 @@
     <string name="pref_title_absorption_cutoff">Įsisavinimo ribinis laikas</string>
     <string name="absorption_cutoff_summary">Laikas, per kurį bet koks maistas laikomas įsisavintu. Likę angliavandeniai bus atmesti.</string>
     <string name="pref_title_absorption_maxtime">Ilgiausia įsisavinimo trukmė</string>
-    <string name="absorption_max_time_summary">Laikas, per kurį visi maisto angliavandeniai, tikėtina, bus įsisavinti</string>
+    <string name="absorption_max_time_summary">Laikas valandomis, per kurį visi valgio angliavandeniai turėtų būti įsisavinti</string>
     <string name="pref_title_autosens_min">Mažiausia Autosens reikšmė</string>
     <string name="openapsama_autosens_min_summary">Numatytoji reikšmė: 0.7\nTai antras daugiklis Autosens funkcijoje, kuris nustato, kad Autosens gali iki minimalios 70 % ribos sumažinti valandinę bazę bei padidinti JIF ir glikemijos tikslo vertę.</string>
     <string name="pref_title_autosens_max">Didžiausia Autosens reikšmė</string>
@@ -365,11 +340,11 @@
     <string name="pref_title_dura_weight">JIF kitimo laike koeficientas</string>
     <string name="openapsama_dura_ISF_weight_summary">Tai svoris, kuris taikomas per ilgesnės trukmės aukštą glikemiją, ir kuris stiprina JIF, taip potencialiai didindamas insulino suleidimą.\n\nNumatytoji reikšmė 0,0 iš esmės išjungia šį efektą.</string>
     <string name="pref_title_smb_delivery_ratio">SMB dozės dalis</string>
-    <string name="openapsama_smb_delivery_ratio_summary">Numatytoji reikšmė: 0,5. Tai yra dar vienas svarbus OpenAPS saugos apribojimas, kuris nurodo, kokią dalį viso reikalingo insulino galima skirti kaip SMB. Šis apribojimas skirtas išvengti pavojingų situacijų, kai SMB užklausos siunčiamos tuo pačiu metu sekėjo globėjo telefono. Šią eksperimentinę reikšmę didinkite lėtai ir atsargiai.</string>
+    <string name="openapsama_smb_delivery_ratio_summary">Numatytoji reikšmė: 0,5. Tai dar viena svarbi OpenAPS saugos riba, nustatanti, kokia viso reikiamo insulino dalis gali būti suleista kaip SMB. Ji padeda išvengti pavojingų situacijų, kai tuo pačiu metu SMB komandos siunčiamos ir iš prižiūrinčio asmens telefono. Šią eksperimentinę reikšmę didinkite lėtai ir atsargiai.</string>
     <string name="pref_title_smb_delivery_ratio_min">Mažiausia SMB dozės dalis</string>
-    <string name="openapsama_smb_delivery_ratio_min_summary">Numatytoji reikšmė: 0,5. Tai apatinė tiesiškai didėjančios SMB dozės dalies riba, o ne fiksuota reikšmė, kaip nurodyta aukščiau.</string>
+    <string name="openapsama_smb_delivery_ratio_min_summary">Numatytoji reikšmė: 0,5. Tai apatinė tiesiškai didėjančio santykio riba, naudojama vietoj aukščiau nurodytos fiksuotos reikšmės.</string>
     <string name="pref_title_smb_delivery_ratio_max">Didžiausia SMB dozės dalis</string>
-    <string name="openapsama_smb_delivery_ratio_max_summary">Numatytoji reikšmė: 0,5. Tai yra viršutinė ribinė reikšmė, naudojama linijiniam santykiui didinti, o ne fiksuota reikšmė, kaip nurodyta aukščiau.</string>
+    <string name="openapsama_smb_delivery_ratio_max_summary">Numatytoji reikšmė: 0,5. Tai viršutinė tiesiškai didėjančio santykio riba, naudojama vietoj aukščiau nurodytos fiksuotos reikšmės.</string>
     <string name="pref_title_smb_max_range_extension">SMB dozės ribos išplėtimas</string>
     <string name="openapsama_smb_max_range_extension_summary">Numatytoji reikšmė: 1. Tai dar vienas svarbus OpenAPS saugos apribojimas, kuris nurodo, kiek kartų galite viršyti įprastą 120 maxSMB/maxNDM minučių ribą. Šią eksperimentinę reikšmę didinkite lėtai ir atsargiai.</string>
     <!-- UnitDoubleKey: Overview preferences -->

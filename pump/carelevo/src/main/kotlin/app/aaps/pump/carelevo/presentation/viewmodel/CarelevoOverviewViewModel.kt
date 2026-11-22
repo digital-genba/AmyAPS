@@ -8,12 +8,11 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import app.aaps.core.data.pump.defs.PumpType
-import app.aaps.core.data.time.T
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
-import app.aaps.core.interfaces.pump.PumpRate
-import app.aaps.core.interfaces.pump.PumpSync
+import app.aaps.core.interfaces.notifications.NotificationId
+import app.aaps.core.interfaces.notifications.NotificationLevel
+import app.aaps.core.interfaces.notifications.NotificationManager
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.rx.AapsSchedulers
@@ -21,10 +20,9 @@ import app.aaps.core.interfaces.rx.bus.RxBus
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.DecimalFormatter
 import app.aaps.core.interfaces.utils.Round
+import app.aaps.core.ui.compose.ScreenAction
 import app.aaps.core.ui.compose.StatusLevel
 import app.aaps.core.ui.compose.icons.IcLoopPaused
-import app.aaps.core.ui.compose.pump.ActionCategory
-import app.aaps.core.ui.compose.pump.PumpAction
 import app.aaps.core.ui.compose.pump.PumpCommunicationStatus
 import app.aaps.core.ui.compose.pump.PumpInfoRow
 import app.aaps.core.ui.compose.pump.PumpOverviewUiState
@@ -45,6 +43,7 @@ import app.aaps.pump.carelevo.coordinator.CarelevoAlarmClearCoordinator
 import app.aaps.pump.carelevo.domain.model.ResponseResult
 import app.aaps.pump.carelevo.domain.model.infusion.CarelevoInfusionInfoDomainModel
 import app.aaps.pump.carelevo.domain.model.patch.CarelevoPatchInfoDomainModel
+import app.aaps.pump.carelevo.domain.repository.CarelevoPatchInfoRepository
 import app.aaps.pump.carelevo.domain.usecase.infusion.CarelevoDeleteInfusionInfoUseCase
 import app.aaps.pump.carelevo.domain.usecase.infusion.model.CarelevoDeleteInfusionRequestModel
 import app.aaps.pump.carelevo.domain.usecase.patch.CarelevoPatchForceDiscardUseCase
@@ -53,6 +52,7 @@ import app.aaps.pump.carelevo.presentation.model.CarelevoOverviewUiModel
 import app.aaps.pump.carelevo.presentation.type.CarelevoScreenType
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.ContributesIntoMap
+import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.binding
 import dev.zacsweers.metrox.viewmodel.ViewModelKey
 import io.reactivex.rxjava3.core.Observable
@@ -71,30 +71,26 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlin.time.Clock
-import kotlin.time.Instant
-import kotlin.time.Duration.Companion.days
-import kotlin.time.Duration.Companion.hours
-import kotlin.time.Duration.Companion.minutes
-import kotlin.time.Duration.Companion.seconds
 import java.math.RoundingMode
-import java.time.Instant as JavaInstant
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import dev.zacsweers.metro.Inject
 import kotlin.jvm.optionals.getOrNull
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Instant
 import app.aaps.core.interfaces.R as InterfacesR
 import app.aaps.core.ui.R as CoreUiR
+import java.time.Instant as JavaInstant
 
 @ContributesIntoMap(AppScope::class, binding = binding<ViewModel>())
 @ViewModelKey
 class CarelevoOverviewViewModel @Inject constructor(
     private val rh: ResourceHelper,
-    private val pumpSync: PumpSync,
+    private val notificationManager: NotificationManager,
     private val dateUtil: DateUtil,
     private val commandQueue: CommandQueue,
     private val aapsLogger: AAPSLogger,
@@ -104,6 +100,7 @@ class CarelevoOverviewViewModel @Inject constructor(
     private val aapsSchedulers: AapsSchedulers,
     private val patchForceDiscardUseCase: CarelevoPatchForceDiscardUseCase,
     private val carelevoDeleteInfusionInfoUseCase: CarelevoDeleteInfusionInfoUseCase,
+    private val patchInfoRepository: CarelevoPatchInfoRepository,
     private val rxBus: RxBus,
     private val decimalFormatter: DecimalFormatter
 ) : ViewModel() {
@@ -345,7 +342,9 @@ class CarelevoOverviewViewModel @Inject constructor(
             .observeOn(aapsSchedulers.main)
             .subscribe {
                 val infusionInfo = it.getOrNull() ?: run {
-                    val patchInfo = carelevoPatch.patchInfo.value?.getOrNull() ?: return@subscribe
+                    // The stored record, not carelevoPatch.patchInfo: that stream follows the store a moment later,
+                    // so right after a discard it still held the old patch and the wizard reopened at the needle step.
+                    val patchInfo = patchInfoRepository.getPatchInfoBySync() ?: return@subscribe
                     if (patchInfo.checkNeedle == true) {
                         _isCheckScreen.tryEmit(CarelevoScreenType.NEEDLE_INSERTION)
                     }
@@ -361,10 +360,14 @@ class CarelevoOverviewViewModel @Inject constructor(
         _tempBasalRateFlow.value = temp?.speed
     }
 
+    /**
+     * Removes temp basal and extended bolus records whose time has passed. A left immediate bolus record is not
+     * removed here: it can belong to a bolus the app never recorded, and `CarelevoBolusCoordinator.recoverLeftoverBolus`
+     * records that bolus from the patch and then removes the record.
+     */
     private fun clearExpiredInfusions() {
         val infusionInfo = carelevoPatch.infusionInfo.value?.getOrNull() ?: return
         val tempBasalInfusionInfo = infusionInfo.tempBasalInfusionInfo
-        val immeBolusInfusionInfo = infusionInfo.immeBolusInfusionInfo
         val extendBolusInfusionInfo = infusionInfo.extendBolusInfusionInfo
 
         val now = Clock.System.now()
@@ -375,12 +378,6 @@ class CarelevoOverviewViewModel @Inject constructor(
             endTime > now
         }
 
-        val immeBolus = immeBolusInfusionInfo?.takeIf { infusion ->
-            val duration = infusion.infusionDurationSeconds ?: return@takeIf true
-            val endTime = infusion.createdAt + duration.seconds
-            endTime > now
-        }
-
         val extendBolus = extendBolusInfusionInfo?.takeIf { infusion ->
             val duration = infusion.infusionDurationMin ?: return@takeIf true
             val endTime = infusion.createdAt + duration.minutes
@@ -388,14 +385,13 @@ class CarelevoOverviewViewModel @Inject constructor(
         }
 
         val deleteTemp = (infusionInfo.tempBasalInfusionInfo != null && tempBasal == null)
-        val deleteImme = (infusionInfo.immeBolusInfusionInfo != null && immeBolus == null)
         val deleteExtend = (infusionInfo.extendBolusInfusionInfo != null && extendBolus == null)
 
-        if (!deleteTemp && !deleteImme && !deleteExtend) return
+        if (!deleteTemp && !deleteExtend) return
 
         val requestModel = CarelevoDeleteInfusionRequestModel(
             isDeleteTempBasal = deleteTemp,
-            isDeleteImmeBolus = deleteImme,
+            isDeleteImmeBolus = false,
             isDeleteExtendBolus = deleteExtend
         )
         clearInfusionInfo(requestModel)
@@ -532,10 +528,7 @@ class CarelevoOverviewViewModel @Inject constructor(
 
     private fun handlePatchDiscardResponse(response: ResponseResult<*>) {
         when (response) {
-            is ResponseResult.Success -> {
-                aapsLogger.debug(LTag.PUMPCOMM, "[startPatchDiscard] success")
-                carelevoPatch.discardTeardown()
-            }
+            is ResponseResult.Success -> aapsLogger.debug(LTag.PUMPCOMM, "[startPatchDiscard] success")
 
             else                      -> {
                 aapsLogger.debug(LTag.PUMPCOMM, "[startPatchDiscard] failed or error")
@@ -551,11 +544,34 @@ class CarelevoOverviewViewModel @Inject constructor(
         triggerEvent(CarelevoOverviewEvent.DiscardFailed)
     }
 
-    /** Only reached from [startDiscardProcess], which already holds the operation lock. */
+    /**
+     * Removes a patch that could not be reached from AAPS. Only reached from [startDiscardProcess], which already holds
+     * the operation lock.
+     *
+     * The removal runs to its end also when the screen goes away (D9). Cut by the screen, it deleted the patch between
+     * the end of its temp basal and the end of its extended bolus, and AAPS went on counting the extended bolus. So only
+     * the result shown on the screen ends with the screen, and the removal holds no reference to this ViewModel.
+     */
+    @Suppress("CheckResult")
     private fun startPatchForceDiscard() {
-        compositeDisposable += patchForceDiscardUseCase.execute()
+        val address = carelevoPatch.getPatchInfoAddress()
+        val patch = carelevoPatch
+        val notifications = notificationManager
+        val logger = aapsLogger
+        val notReached = rh.gs(R.string.carelevo_discarded_not_reached)
+        val removal = patchForceDiscardUseCase.execute()
             .timeout(10, TimeUnit.SECONDS)
             .subscribeOn(aapsSchedulers.io)
+            .doOnSuccess { response ->
+                if (response is ResponseResult.Success) {
+                    patch.discardTeardown(address)
+                    // The patch was not told to stop, so the user must take it off.
+                    notifications.post(NotificationId.PUMP_WARNING, notReached, level = NotificationLevel.IMPORTANT)
+                }
+            }
+            .cache()
+        removal.subscribe({}, { error -> logger.error(LTag.PUMPCOMM, "[startPatchDiscard] removal failed", error) })
+        compositeDisposable += removal
             .observeOn(aapsSchedulers.main)
             .subscribe(
                 { response -> handlePatchDiscardResponse(response) },
@@ -592,18 +608,11 @@ class CarelevoOverviewViewModel @Inject constructor(
                 if (cancelExtendBolusResult && cancelTempBasalResult) {
                     // Route the stop frame through the queue (connect-before-execute). The pre-cancel above
                     // already ran on the queue from this coroutine (safe — not the worker thread).
+                    // The command itself records the stop (CarelevoActivationExecutor), so the record does not
+                    // depend on this screen still being there when the queue returns.
                     val result = commandQueue.customCommand(CmdPumpStop(stopMinute))
                     if (result.success) {
-                        // Read the clock only here, after the pump has confirmed the stop. The pre-cancel
-                        // and the stop frame are queue round trips that can take tens of seconds, so a
-                        // value read before them would back-date the suspension and cut the extended bolus
-                        // earlier than it really ended. One read, so both syncs below share one instant.
-                        handlePumpStopResponse(
-                            isTempBasalRunning = isTempBasalRunning,
-                            isExtendBolusRunning = isExtendBolusRunning,
-                            stopMinute = stopMinute,
-                            stopEventTimestamp = dateUtil.now()
-                        )
+                        handlePumpStopResponse(isTempBasalRunning = isTempBasalRunning, isExtendBolusRunning = isExtendBolusRunning)
                     } else {
                         aapsLogger.debug(LTag.PUMPCOMM, "[startPumpStopProcess] stop failed")
                         triggerEvent(CarelevoOverviewEvent.StopPumpFailed)
@@ -613,46 +622,18 @@ class CarelevoOverviewViewModel @Inject constructor(
                     triggerEvent(CarelevoOverviewEvent.StopPumpFailed)
                 }
             } finally {
-                // Held until the two pumpSync writes in handlePumpStopResponse have settled; releasing right
-                // after the BLE round trip left a window for a re-entrant tap. The infusion-info delete in
-                // that same function is a fire-and-forget Rx call and is NOT covered by this. In a `finally`
-                // because a sync that throws would otherwise leave the screen behind the Loading scrim for
+                // Held until the stop and its record (written by the command) are done; releasing right after
+                // the BLE round trip left a window for a re-entrant tap. The infusion-info delete in
+                // handlePumpStopResponse is a fire-and-forget Rx call and is NOT covered by this. In a `finally`
+                // because a call that throws would otherwise leave the screen behind the Loading scrim for
                 // good, and the lock would then refuse every later suspend, resume and discard.
                 endOperation()
             }
         }
     }
 
-    private suspend fun handlePumpStopResponse(
-        isTempBasalRunning: Boolean,
-        isExtendBolusRunning: Boolean,
-        stopMinute: Int,
-        stopEventTimestamp: Long
-    ) {
+    private fun handlePumpStopResponse(isTempBasalRunning: Boolean, isExtendBolusRunning: Boolean) {
         aapsLogger.debug(LTag.PUMPCOMM, "[startPumpStopProcess] response success")
-
-        pumpSync.syncTemporaryBasalWithPumpId(
-            timestamp = stopEventTimestamp,
-            rate = PumpRate(0.0),
-            duration = T.mins(stopMinute.toLong()).msecs(),
-            isAbsolute = true,
-            type = PumpSync.TemporaryBasalType.PUMP_SUSPEND,
-            pumpId = stopEventTimestamp,
-            pumpType = PumpType.CAREMEDI_CARELEVO,
-            pumpSerial = carelevoPatch.patchInfo.value?.getOrNull()?.manufactureNumber ?: ""
-        )
-
-        // Only cut an extended bolus that was really running - the transaction ends whatever it finds, so
-        // an ungated call could touch a record this suspend never meant to change.
-        if (isExtendBolusRunning) {
-            pumpSync.syncStopExtendedBolusWithPumpId(
-                timestamp = stopEventTimestamp,
-                endPumpId = stopEventTimestamp,
-                pumpType = PumpType.CAREMEDI_CARELEVO,
-                pumpSerial = carelevoPatch.patchInfo.value?.getOrNull()?.manufactureNumber ?: ""
-            )
-        }
-
         clearInfusionInfo(
             CarelevoDeleteInfusionRequestModel(
                 isDeleteTempBasal = isTempBasalRunning,
@@ -850,10 +831,9 @@ class CarelevoOverviewViewModel @Inject constructor(
 
         val primaryActions = when (patchState) {
             PatchState.NotConnectedNotBooting -> listOf(
-                PumpAction(
+                ScreenAction(
                     label = rh.gs(R.string.carelevo_overview_connect_btn_label),
                     icon = Icons.Filled.SwapHoriz,
-                    category = ActionCategory.PRIMARY,
                     onClick = { triggerEvent(CarelevoOverviewEvent.StartConnectionFlow) }
                 )
             )
@@ -865,20 +845,18 @@ class CarelevoOverviewViewModel @Inject constructor(
         // they reconnect-on-tap via the queue rather than being gated behind a live link.
         val managementActions = if (patchState == PatchState.ConnectedBooted || patchState == PatchState.NotConnectedBooted) {
             listOf(
-                PumpAction(
+                ScreenAction(
                     label = rh.gs(R.string.carelevo_overview_pump_discard_btn_label),
                     icon = Icons.Filled.Delete,
-                    category = ActionCategory.MANAGEMENT,
                     onClick = { triggerEvent(CarelevoOverviewEvent.ShowPumpDiscardDialog) }
                 ),
-                PumpAction(
+                ScreenAction(
                     label = if (overviewData.isPumpStopped) {
                         rh.gs(R.string.carelevo_overview_pump_resume_btn_label)
                     } else {
                         rh.gs(R.string.carelevo_overview_pump_suspend_btn_label)
                     },
                     icon = if (overviewData.isPumpStopped) Icons.Filled.PlayArrow else IcLoopPaused,
-                    category = ActionCategory.MANAGEMENT,
                     onClick = { triggerEvent(CarelevoOverviewEvent.ClickPumpStopResumeBtn) }
                 )
             )

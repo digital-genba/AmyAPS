@@ -5,13 +5,13 @@
     <string name="medtrum_pump_description">Pump integration for Medtrum Nano and Medtrum 300U</string>
     <string name="medtrum_pump_setting">Medtrum pump settings</string>
     <string name="pump_error">Pump error: %1$s !! </string>
-    <string name="pump_warning">Pump warning: %1$s </string>
+    <string name="pump_warning">Pump warning: %1$s</string>
     <string name="pump_is_suspended">Pump is suspended</string>
     <string name="pump_is_suspended_hour_max">Pump is suspended due to hourly max insulin exceeded</string>
     <string name="pump_is_suspended_day_max">Pump is suspended due to daily max insulin exceeded</string>
     <string name="patch_not_active">Patch not activated</string>
     <string name="pump_setting_failed">Setting user settings to pump failed!</string>
-    <string name="pump_sync_error">Error while syncing history from pump, a record has been skipped. Check treatment tab to check if bolus is synced correctly. Snooze and if error keep coming back change patch or pumpbase.</string>
+    <string name="pump_sync_error">Error while syncing history from pump, a record has been skipped. Check treatment tab to check if bolus is synced correctly. Snooze, and if the error keeps coming back, change patch or pump base.</string>
     <string name="patch_reset_after_primed_error">The patch restarted by itself and lost its session. It cannot deliver insulin any more. Remove the patch and start a new one.</string>
 
     <!-- overview fragment -->
@@ -97,6 +97,7 @@
 
     <string name="deactivate_sure">Are you sure that you want to deactivate the current patch?</string>
     <string name="cancel_sure">Are you sure that you want to cancel the activation?</string>
+    <string name="cancel_deactivation_sure">Are you sure that you want to cancel the deactivation? The patch may stay active.</string>
     <string name="medtrum_deactivate_pump_confirm">Are you sure? This action cannot be reversed!!</string>
     <string name="press_next_or_cancel">Press <b>Next</b> to deactivate or <b>Cancel</b> to return to main screen.</string>
     <string name="deactivating_pump">Deactivating patch. Please Wait.</string>

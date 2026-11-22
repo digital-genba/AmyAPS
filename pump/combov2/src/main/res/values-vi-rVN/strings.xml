@@ -19,7 +19,7 @@
     <string name="combov2_error_10">Lỗi bình chứa</string>
     <string name="combov2_error_11">Bộ dây truyền chưa được làm đầy</string>
     <string name="combov2_extended_bolus_not_supported">Không hỗ trợ liều bolus kéo dài</string>
-    <string name="combov2_title">Accu-Check Combo v2</string>
+    <string name="combov2_title">Accu-Chek Combo v2</string>
     <string name="combov2_pair_with_pump_title">Ghép nối với bơm</string>
     <string name="combov2_unpair_pump_title">Hủy ghép nối bơm</string>
     <string name="combov2_driver_state_label">Trạng thái điều khiển</string>
@@ -31,12 +31,10 @@
 2. Kiểm tra xem có thiết bị nào đã được ghép nối chưa; nếu có, vào màn hình \"Delete device\" trên bơm để delete/unpair thiết bị đó.\n
 3. Vào màn hình \"Add device\" trên bơm và bắt đầu quá trình ghép nối trên bơm.\n
 4. Nhấn nút \"Start pairing\" bên dưới để khởi động quá trình ghép nối trong AndroidAPS.\n</string>
-    <string name="combov2_steps_if_no_connection_during_pairing">Sau một lúc, tên điện thoại sẽ hiển thị trên màn hình bơm; nhấn nút CHECK để xác nhận.\n\n
-Khi quá trình ghép đôi hoàn tất, xác nhận ghép đôi thành công trên bơm và quay lại màn hình chính của bơm bằng cách nhấn nút CHECK hai lần.\n\n
-Nếu sau khoảng 5 phút vẫn chưa thiết lập được kết nối:\n\n
-1. Nhấn Back hoặc nút \"Cancel Pairing\".\n
-2. Hủy ghép nối trên bơm Combo (nhấn đồng thời hai nút UP và MENU để hủy ghép đôi).\n
-3. Thử ghép nối lại từ đầu</string>
+    <string name="combov2_steps_if_no_connection_during_pairing">Sau một lúc, tên điện thoại sẽ hiển thị trên màn hình bơm. Nhấn CHECK để xác nhận.\n\nKhi ghép nối thành công, hãy xác nhận hoàn tất ghép nối trên bơm và nhấn nút CHECK hai lần để quay lại màn hình chính của bơm.\n\nNếu sau khoảng 5 phút mà vẫn chưa thiết lập được kết nối:\n\n
+1. Nhấn Back hoặc nút \"Hủy ghép nối\".\n
+2. Hủy ghép nối trên bơm Combo (nhấn đồng thời hai nút UP và MENU để hủy).\n
+3. Thử ghép nối lại</string>
     <string name="combov2_enter_pin">Nhập PIN</string>
     <string name="combov2_cancel_pairing">Hủy ghép nối</string>
     <string name="combov2_confirm_cancel_pairing_message">Bạn có thực sự muốn hủy ghép nối không?</string>
@@ -81,7 +79,12 @@ Nếu sau khoảng 5 phút vẫn chưa thiết lập được kết nối:\n\n
     <string name="combov2_bolus_delivery_failed">Tiêm liều bolus thất bại. Có vẻ như bolus chưa được tiêm. Để chắc chắn, vui lòng kiểm tra trực tiếp trên bơm để tránh tiêm bolus hai lần, sau đó thực hiện lại bolus. Để phòng tránh lỗi phần mềm, hệ thống sẽ không tự động thử tiêm lại bolus.</string>
     <string name="combov2_bolus_not_delivered">Liều Bolus chưa được tiêm</string>
     <string name="combov2_cannot_access_pump_data">Không thể truy cập dữ liệu bơm; cần ghép nối lại bơm</string>
-    <string name="combov2_unaccounted_bolus_detected_cancelling_bolus">Phát hiện các liều bolus không được ghi nhận. Hủy bolus vì lý do an toàn.</string>
+    <string name="combov2_bolus_outcome_unknown" comment="%1$s=insulin amount with unit. Example: 0.6 U, or for U200 insulin 0.6 U (0.3 CU)">Mất kết nối với bơm trong khi đang phân phối bolus. Đến thời điểm đó, bơm đã phân phối %1$s và có thể vẫn tiếp tục phân phối phần còn lại. Không thực hiện bolus lần nữa. AAPS sẽ đọc lượng insulin thực tế từ bơm khi kết nối lại.</string>
+    <string name="combov2_bolus_stopped_history_unknown" comment="%1$s=insulin amount with unit. Example: 0.6 U, or for U200 insulin 0.6 U (0.3 CU)">Bơm đã dừng phân phối liều bolus sau %1$s. Sau đó, kết nối bị mất nên AAPS không thể đọc lịch sử bơm. AAPS sẽ đọc lượng insulin thực tế khi kết nối lại lần tiếp theo. Hãy kiểm tra bơm trước khi thực hiện liều bolus tiếp theo.</string>
+    <string name="combov2_bolus_stopped_after_error" comment="%1$s=insulin amount with unit. Example: 0.6 U, or for U200 insulin 0.6 U (0.3 CU)">Liều bolus đã bị dừng do lỗi sau %1$s. Hãy kiểm tra bơm trước khi thực hiện liều bolus tiếp theo.</string>
+    <string name="combov2_bolus_request_outcome_unknown">Kết nối với bơm bị mất khi AAPS gửi lệnh phân phối liều bolus, nên không rõ bơm có nhận được lệnh hay không. Hãy kiểm tra lịch sử liều bolus trên bơm trước khi thực hiện liều bolus tiếp theo. AAPS sẽ đọc lượng insulin thực tế từ bơm khi kết nối lại lần tiếp theo.</string>
+    <string name="combov2_unknown_bolus_in_history">Lịch sử bơm có một liều bolus mà AAPS chưa biết đến. Liều bolus được yêu cầu chưa được phân phối vì đã được tính toán mà không tính đến lượng insulin đó. Hãy kiểm tra lịch sử liều bolus trên bơm và IOB trong AAPS. Nếu vẫn cần liều bolus, hãy tính toán lại.</string>
+    <string name="combov2_bolus_given_other_boluses_found">Liều bolus đã được phân phối, nhưng lịch sử bơm còn có các liều bolus khác mà AAPS chưa biết đến. Các liều bolus này đã được ghi nhận. Hãy kiểm tra IOB trước khi thực hiện liều bolus tiếp theo.</string>
     <string name="combov2_incorrect_active_basal_profile">Cấu hình liều nền đang hoạt động không đúng; Cấu hình 1 phải là cấu hình đang kích hoạt, không phải cấu hình %1$d</string>
     <string name="combov2_unrecognized_alert">Cảnh báo Combo không được nhận dạng</string>
     <string name="combov2_combo_alert">Cảnh báo Combo</string>

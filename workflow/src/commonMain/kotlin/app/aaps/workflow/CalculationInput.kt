@@ -8,8 +8,8 @@ import app.aaps.core.interfaces.workflow.CalculationSignalsEmitter
 /**
  * The input of one calculation chain.
  *
- * Top level rather than nested in a worker: they are plain data holders read by [WorkflowChainData],
- * which the workers only look up their slot in, so they belong beside it.
+ * Top level rather than nested in a runner: they are plain data holders read by [WorkflowChainData],
+ * where each phase looks up its slot, so they belong beside it.
  */
 class PrepareGraphData(
     val iobCobCalculator: IobCobCalculator, // cannot be injected : HistoryBrowser uses different instance
@@ -21,7 +21,9 @@ class PrepareGraphData(
     val bgDataReload: Boolean,
     val limitDataToOldestAvailable: Boolean,
     val triggeredByNewBG: Boolean,
-    val emitFinalProgress: Boolean
+    val emitFinalProgress: Boolean,
+    /** The live graph: its window follows the clock, see `moveLiveWindowTo`. False for the history browser. */
+    val liveWindow: Boolean
 )
 
 /** The input of the phase that runs after [PrepareGraphData]. */

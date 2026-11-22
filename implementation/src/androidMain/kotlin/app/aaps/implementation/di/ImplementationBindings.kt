@@ -7,6 +7,7 @@ import app.aaps.core.interfaces.notifications.NotificationManager
 import app.aaps.core.interfaces.notifications.SystemNotificationPlatform
 import app.aaps.core.interfaces.pump.BolusProgressData
 import app.aaps.core.interfaces.resources.TextResolver
+import app.aaps.core.interfaces.rx.bus.RxBus
 import app.aaps.implementation.notifications.CommonNotificationManager
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.BindingContainer
@@ -23,9 +24,10 @@ import kotlinx.coroutines.CoroutineScope
 object ImplementationBindings {
 
     /**
-     * [BolusProgressData] is a plain class rather than an `@Inject constructor` one, because
-     * `javax.inject` cannot be used from code that is meant to reach commonMain. Providing it here
-     * keeps the graph identical: same singleton scope, same application-scoped CoroutineScope.
+     * [BolusProgressData] is a plain class rather than an `@Inject` one. That was needed while the DI
+     * annotations were javax, which commonMain cannot use; Metro's can, so it could now be annotated
+     * instead. Providing it here gives the same graph: one instance, the application-scoped
+     * CoroutineScope.
      */
     @Provides
     @SingleIn(AppScope::class)
@@ -50,6 +52,7 @@ object ImplementationBindings {
         aapsLogger: AAPSLogger,
         rh: TextResolver,
         platform: SystemNotificationPlatform,
+        rxBus: RxBus,
         @ApplicationScope appScope: CoroutineScope
-    ): NotificationManager = CommonNotificationManager(aapsLogger, rh, platform, appScope)
+    ): NotificationManager = CommonNotificationManager(aapsLogger, rh, platform, rxBus, appScope)
 }

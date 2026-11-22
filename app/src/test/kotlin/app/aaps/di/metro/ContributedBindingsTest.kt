@@ -1,13 +1,13 @@
 package app.aaps.di.metro
 
-import app.aaps.implementation.utils.TrendCalculatorImpl
 import app.aaps.core.interfaces.plugin.PermissionGroup
 import app.aaps.core.interfaces.plugin.PluginBase
 import app.aaps.core.keys.interfaces.TextRef
-import org.mockito.kotlin.mock
-import org.mockito.kotlin.whenever
+import app.aaps.implementation.utils.TrendCalculatorImpl
 import com.google.common.truth.Truth.assertThat
 import org.junit.jupiter.api.Test
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.whenever
 
 /**
  * Every `@ContributesBinding` implementation reaches the graph, and is scoped.
@@ -44,13 +44,12 @@ class ContributedBindingsTest {
         assertThat(root.dexcomTirCalculator).isSameInstanceAs(root.dexcomTirCalculator)
         assertThat(root.iconsProvider).isSameInstanceAs(root.iconsProvider)
         assertThat(root.insulinManager).isSameInstanceAs(root.insulinManager)
-        assertThat(root.wizardBolusExecutor).isSameInstanceAs(root.wizardBolusExecutor)
+        assertThat(root.masterActionExecutor).isSameInstanceAs(root.masterActionExecutor)
         assertThat(root.loggerUtils).isSameInstanceAs(root.loggerUtils)
         assertThat(root.alarmSoundPlayer).isSameInstanceAs(root.alarmSoundPlayer)
         assertThat(root.notificationHolder).isSameInstanceAs(root.notificationHolder)
         assertThat(root.userEntryPresentationHelper).isSameInstanceAs(root.userEntryPresentationHelper)
         assertThat(root.profiler).isSameInstanceAs(root.profiler)
-        assertThat(root.sharedPreferences).isSameInstanceAs(root.sharedPreferences)
         assertThat(root.lastBgData).isSameInstanceAs(root.lastBgData)
         assertThat(root.localeDependentSetting).isSameInstanceAs(root.localeDependentSetting)
         assertThat(root.pumpStatusProvider).isSameInstanceAs(root.pumpStatusProvider)
@@ -75,7 +74,7 @@ class ContributedBindingsTest {
         assertThat(root.dateUtil).isSameInstanceAs(root.dateUtil)
         assertThat(root.l).isSameInstanceAs(root.l)
         assertThat(root.aapsSchedulers).isSameInstanceAs(root.aapsSchedulers)
-        assertThat(root.sp).isSameInstanceAs(root.sp)
+        assertThat(root.keyValueStore).isSameInstanceAs(root.keyValueStore)
         assertThat(root.sceneIconResolver).isSameInstanceAs(root.sceneIconResolver)
         assertThat(root.processedDeviceStatusData).isSameInstanceAs(root.processedDeviceStatusData)
         assertThat(root.lastLocationDataContainer).isSameInstanceAs(root.lastLocationDataContainer)
@@ -147,7 +146,8 @@ class ContributedBindingsTest {
         val root = testRoot()
         assertThat(root.pumpSync).isNotSameInstanceAs(root.pumpSync)
         assertThat(root.pumpWithConcentration).isNotSameInstanceAs(root.pumpWithConcentration)
-        assertThat(root.widgetUpdater).isNotSameInstanceAs(root.widgetUpdater)
+        // widgetUpdater is not here any more: #5246 made it one instance on purpose, because it holds
+        // the update that waits for a display to turn on. GraphScopeStabilityTest pins it.
         // Result objects: a fresh one per call is the point.
         assertThat(root.apsResult).isNotSameInstanceAs(root.apsResult)
         assertThat(root.pumpEnactResult).isNotSameInstanceAs(root.pumpEnactResult)

@@ -23,14 +23,14 @@ import app.aaps.pump.equil.manager.command.CmdHistoryGet
 import app.aaps.pump.equil.manager.command.CmdInsulinGet
 import app.aaps.pump.equil.manager.command.CmdPair
 import app.aaps.pump.equil.manager.command.CmdRunningModeGet
+import dev.zacsweers.metro.AppScope
+import dev.zacsweers.metro.Inject
+import dev.zacsweers.metro.SingleIn
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import dev.zacsweers.metro.Inject
-import dev.zacsweers.metro.AppScope
-import dev.zacsweers.metro.SingleIn
 
 @SingleIn(AppScope::class)
 @Inject
@@ -59,6 +59,19 @@ class EquilBLE(
             aapsLogger.debug(LTag.PUMPCOMM, "error133 ")
             baseCmd?.resolvedResult = ResolvedResult.CONNECT_ERROR
         }
+        bleTransport.onDescriptorWriteFailed = { linkSetupFailed("enabling notifications failed") }
+    }
+
+    /**
+     * The link is up, but services or notifications could not be set up, so no answer from the pump
+     * can arrive. Fail the waiting command at once and close the link, so the next connect starts
+     * clean. Before, the command waited for its full timeout.
+     */
+    private fun linkSetupFailed(reason: String) {
+        aapsLogger.debug(LTag.PUMPBTCOMM, "Link setup failed: $reason")
+        baseCmd?.resolvedResult = ResolvedResult.CONNECT_ERROR
+        bleConnectErrorForResult()
+        disconnect()
     }
 
     // --- BleTransportListener ---
@@ -89,7 +102,7 @@ class EquilBLE(
 
     override fun onServicesDiscovered(success: Boolean) {
         if (!success) {
-            aapsLogger.debug(LTag.PUMPBTCOMM, "onServicesDiscovered failed")
+            linkSetupFailed("service discovery failed")
             return
         }
         bleTransport.gatt.enableNotifications()
@@ -121,12 +134,35 @@ class EquilBLE(
         }
     }
 
+    // --- Driver stop ---
+
+    /** Set while the driver is stopped: no scan and no new link, see [stop]. */
+    @Volatile var stopped = false
+        private set
+
+    /**
+     * The driver stops, so the link closes and no new one opens until [start]. A command that still runs fails at
+     * once. Before, it connected again for a driver that was gone, and that driver went on writing its pump state into
+     * the settings.
+     */
+    fun stop() {
+        aapsLogger.debug(LTag.PUMPBTCOMM, "Driver stopped: link closed, no new one")
+        stopped = true
+        bleConnectErrorForResult()
+        disconnect()
+    }
+
+    fun start() {
+        stopped = false
+    }
+
     // --- Command sequencing ---
 
     private fun bleConnectErrorForResult() {
         baseCmd?.let { baseCmd ->
             synchronized(baseCmd) {
                 baseCmd.cmdSuccess = false
+                baseCmd.failed = true
                 baseCmd.notifyAll()
             }
         }
@@ -199,7 +235,7 @@ class EquilBLE(
         // Guard against the scan emitting the same device multiple times (and other re-entrant
         // calls): only one connect attempt per session, reset on disconnect(). Prevents stacking
         // overlapping GATT clients. See also the close-before-connect guard in EquilBleTransportImpl.
-        if (connectInitiated) return
+        if (connectInitiated || stopped) return
         connectInitiated = true
         val runnable = Runnable {
             aapsLogger.debug(LTag.PUMPCOMM, "connectEquil======")
@@ -236,8 +272,13 @@ class EquilBLE(
     }
 
     fun writeCmd(baseCmd: BaseCmd) {
-        aapsLogger.debug(LTag.PUMPCOMM, "writeCmd {}", baseCmd)
+        aapsLogger.debug(LTag.PUMPCOMM, "writeCmd $baseCmd")
         this.baseCmd = baseCmd
+        if (stopped) {
+            aapsLogger.debug(LTag.PUMPCOMM, "Driver stopped: $baseCmd not sent")
+            bleConnectErrorForResult()
+            return
+        }
         val mac: String = when (baseCmd) {
             is CmdPair -> baseCmd.address
             is CmdDevicesOldGet -> baseCmd.address
@@ -276,17 +317,25 @@ class EquilBLE(
         preCmd = baseCmd
     }
 
-    fun readHistory(baseCmd: CmdHistoryGet) {
+    /**
+     * Sends a history request on the open link.
+     *
+     * @return false when there is no open link, so nothing was sent and no answer will come. The
+     * caller must not wait for one then. The pump closes the link about 10 s after a command, so
+     * this is the normal case after a bolus. It used to notify the command instead, but that
+     * happened before the caller started to wait, so the caller waited its full 22 s timeout.
+     */
+    fun readHistory(baseCmd: CmdHistoryGet): Boolean {
         if (isConnected && preCmd != null) {
             baseCmd.runCode = preCmd!!.runCode
             baseCmd.runPwd = preCmd!!.runPwd
             this.baseCmd = baseCmd
             nextCmd2()
             preCmd = baseCmd
-        } else {
-            aapsLogger.debug(LTag.PUMPCOMM, "readHistory error")
-            synchronized(baseCmd) { baseCmd.notifyAll() }
+            return true
         }
+        aapsLogger.debug(LTag.PUMPCOMM, "readHistory: no open link, history not requested")
+        return false
     }
 
     private var equilResponse: EquilResponse? = null
@@ -335,7 +384,7 @@ class EquilBLE(
     private fun startScan() {
         macAddress = equilManager?.equilState?.address
         aapsLogger.debug(LTag.PUMPBTCOMM, "startScan====$startTrue====$macAddress===")
-        if (macAddress.isNullOrEmpty()) return
+        if (macAddress.isNullOrEmpty() || stopped) return
         if (startTrue) return
         startTrue = true
         connecting = true
@@ -343,12 +392,17 @@ class EquilBLE(
 
         bleTransport.scanAddress = macAddress
         updateCmdStatus(ResolvedResult.NOT_FOUNT)
+        // With a known address the connection does not need the scan, it only reads the advertisement
+        // (battery, reservoir, history index). Stop it after a while, or with the pump out of range the
+        // most power hungry scan mode runs until the queue gives up. A scan that has to find the pump
+        // (autoScan) keeps running; the connect timeout of the command ends it.
+        if (!autoScan) handler.sendEmptyMessageDelayed(TIME_OUT_WHAT, EquilConst.EQUIL_ADVERT_SCAN_TIME_OUT)
 
         scanJob = scope.launch {
             bleTransport.scanner.scannedDevices.collect { device ->
                 device.scanRecordBytes?.let { bytes ->
                     bleHandler.post {
-                        equilManager?.decodeData(bytes, autoScan)
+                        equilManager?.decodeData(bytes)
                     }
                 }
                 stopScan()
@@ -368,7 +422,7 @@ class EquilBLE(
 
     fun connect(from: String) {
         aapsLogger.debug(LTag.PUMPCOMM, "connect====connecting=$connecting====isConnected=$isConnected from $from")
-        if (connecting || isConnected) {
+        if (connecting || isConnected || stopped) {
             return
         }
         baseCmd = null

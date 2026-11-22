@@ -82,7 +82,7 @@ class ChipsViewModel(
             if (constraintsProcessed.carbsReq > 0) {
                 val lastCarbsTime = persistenceLayer.getNewestCarbs()?.timestamp ?: 0L
                 if (lastCarbsTime < lastRun.lastAPSRun) {
-                    cobText += " ${constraintsProcessed.carbsReq}${rh.gs(CoreUiStrings.required)}"
+                    cobText = rh.gs(CoreUiStrings.value_with_unit, cobText, rh.gs(CoreUiStrings.value_with_unit, constraintsProcessed.carbsReq.toString(), rh.gs(CoreUiStrings.required)))
                 }
                 carbsReq = constraintsProcessed.carbsReq
             }
@@ -114,6 +114,7 @@ class ChipsViewModel(
             asText = data.asText,
             isfFrom = data.isfFrom,
             isfTo = data.isfTo,
+            isfStep = data.isfStep,
             dialogText = data.lines.joinToString("\n"),
             ratio = data.ratio,
             isEnabled = data.isEnabled,
@@ -126,10 +127,13 @@ class ChipsViewModel(
             val bolusIob = iobCobCalculator.calculateIobFromBolus().round()
             val basalIob = iobCobCalculator.calculateIobFromTempBasalsIncludingConvertedExtended().round()
             val total = bolusIob.iob + basalIob.basaliob
-            val message =
-                rh.gs(CoreUiStrings.bolus_iob_label) + ": " + rh.gs(InterfacesStrings.format_insulin_units, bolusIob.iob) + "\n" +
-                    rh.gs(CoreUiStrings.treatments_wizard_basaliob_label) + ": " + rh.gs(InterfacesStrings.format_insulin_units, basalIob.basaliob) + "\n" +
-                    rh.gs(CoreUiStrings.iob) + ": " + rh.gs(InterfacesStrings.format_insulin_units, total)
+            val message = listOf(
+                CoreUiStrings.bolus_iob_label to bolusIob.iob,
+                CoreUiStrings.treatments_wizard_basaliob_label to basalIob.basaliob,
+                CoreUiStrings.iob to total
+            ).joinToString("\n") { (label, insulin) ->
+                rh.gs(InterfacesStrings.confirmation_line, rh.gs(label), rh.gs(InterfacesStrings.format_insulin_units, insulin))
+            }
             rxBus.send(
                 EventShowDialog.Ok(
                     title = rh.gs(CoreUiStrings.iob),

@@ -2,27 +2,29 @@ package app.aaps.ui.compose.scenes
 
 import android.content.Context
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import app.aaps.core.data.model.ActiveSceneState
 import app.aaps.core.data.model.Scene
 import app.aaps.core.data.model.SceneLifecycle
-import app.aaps.core.ui.R as CoreUiR
-import com.google.common.truth.Truth.assertThat
-import org.junit.Before
-import androidx.compose.runtime.CompositionLocalProvider
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.ui.compose.LocalDateUtil
-import org.mockito.kotlin.mock
+import com.google.common.truth.Truth.assertThat
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.mockito.kotlin.mock
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import app.aaps.core.ui.R as CoreUiR
 
 /** Robolectric composable test for [ActiveSceneBannerContent]: active (name + End) vs expired (ended + Close). */
 @RunWith(RobolectricTestRunner::class)
@@ -82,5 +84,55 @@ class ActiveSceneBannerContentTest {
         compose.onNodeWithText(endedLabel).assertIsDisplayed()
         compose.onNodeWithText(closeLabel).performClick()
         assertThat(dismissed).isTrue()
+    }
+
+    // The follow-up is what the scene sets in motion when the countdown ends, so the banner names it.
+    @Test
+    fun activeScene_showsFollowUpScene() {
+        val ctx: Context = RuntimeEnvironment.getApplication()
+        compose.setContent {
+            CompositionLocalProvider(LocalDateUtil provides dateUtil) {
+                MaterialTheme {
+                    ActiveSceneBannerContent(state = state(), expired = false, onEndClick = {}, chainTargetName = "Cooldown")
+                }
+            }
+        }
+        compose.onNodeWithText(ctx.getString(CoreUiR.string.scene_chain_indicator, "Cooldown")).assertIsDisplayed()
+    }
+
+    /**
+     * A follow-up that did not start is said here and nowhere else: there is no notification for it, so
+     * losing this line would lose the news.
+     */
+    @Test
+    fun expiredScene_saysWhyTheFollowUpDidNotStart() {
+        val ctx: Context = RuntimeEnvironment.getApplication()
+        val reason = "\"Night\" is disabled"
+        compose.setContent {
+            CompositionLocalProvider(LocalDateUtil provides dateUtil) {
+                MaterialTheme {
+                    ActiveSceneBannerContent(
+                        state = state(SceneLifecycle.EXPIRED).copy(chainSkipReason = reason),
+                        expired = true, onEndClick = {}
+                    )
+                }
+            }
+        }
+        compose.onNodeWithText(ctx.getString(CoreUiR.string.scene_chain_skipped_line, reason)).assertIsDisplayed()
+    }
+
+    /** While the scene still runs there is nothing skipped to report, even if a stale reason were set. */
+    @Test
+    fun activeScene_doesNotShowASkipReason() {
+        val ctx: Context = RuntimeEnvironment.getApplication()
+        val reason = "\"Night\" is disabled"
+        compose.setContent {
+            CompositionLocalProvider(LocalDateUtil provides dateUtil) {
+                MaterialTheme {
+                    ActiveSceneBannerContent(state = state().copy(chainSkipReason = reason), expired = false, onEndClick = {})
+                }
+            }
+        }
+        compose.onAllNodesWithText(ctx.getString(CoreUiR.string.scene_chain_skipped_line, reason)).assertCountEquals(0)
     }
 }

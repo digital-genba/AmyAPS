@@ -33,6 +33,10 @@ class SerialIOThread(
     // Written by the sending thread (sendMessage), read by the reader thread (run) to match a reply.
     @Volatile private var processedMessage: MessageBase? = null
 
+    /** Phone time of the last message from the pump, 0 before the first one. */
+    @Volatile var lastMessageAt: Long = 0
+        private set
+
     init {
         start()
     }
@@ -59,6 +63,7 @@ class SerialIOThread(
                 // process all messages we already got
                 while (mReadBuff.size > 3) { // 3rd byte is packet size. continue only if we an determine packet size
                     val extractedBuff = cutMessageFromBuffer() ?: break
+                    lastMessageAt = System.currentTimeMillis()
                     // message is not complete in buffer (wrong packet calls disconnection)
                     val command = extractedBuff[5].toInt() and 0xFF or (extractedBuff[4].toInt() shl 8 and 0xFF00)
                     val message: MessageBase = if (processedMessage?.command == command) {
@@ -67,7 +72,11 @@ class SerialIOThread(
                         // get it from hash table
                         hashTable.findMessage(command)
                     }
-                    aapsLogger.debug(LTag.PUMPBTCOMM, "<<<<< ${message.messageName} ${MessageBase.toHexString(extractedBuff)}")
+                    aapsLogger.debug(
+                        LTag.PUMPBTCOMM,
+                        if (message.containsSecret) "<<<<< ${message.messageName} (${extractedBuff.size} bytes, not logged: holds the pump password)"
+                        else "<<<<< ${message.messageName} ${MessageBase.toHexString(extractedBuff)}"
+                    )
 
                     // Process the message, then mark it received and wake the sender - both inside the
                     // message monitor. isReceived is set AFTER handleMessage so the sender never proceeds

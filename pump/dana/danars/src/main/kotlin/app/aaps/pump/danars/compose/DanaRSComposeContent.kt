@@ -15,6 +15,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.res.stringResource
+import androidx.navigationevent.NavigationEventInfo
+import androidx.navigationevent.compose.NavigationBackHandler
+import androidx.navigationevent.compose.rememberNavigationEventState
 import app.aaps.core.interfaces.pump.BlePreCheck
 import app.aaps.core.ui.compose.ComposablePluginContent
 import app.aaps.core.ui.compose.ToolbarConfig
@@ -117,6 +120,17 @@ class DanaRSComposeContent(
             )
         }
 
+        // System Back on a screen of the pump goes to the overview, as its arrow does. Without this handler the event
+        // reaches the app NavHost, which pops the whole pump page (found by the pump UI test).
+        NavigationBackHandler(
+            state = rememberNavigationEventState(NavigationEventInfo.None),
+            isBackEnabled = currentScreen != DanaScreen.OVERVIEW,
+            onBackCompleted = {
+                if (currentScreen == DanaScreen.PAIR_WIZARD) wizardViewModel.cancel()
+                currentScreen = DanaScreen.OVERVIEW
+            }
+        )
+
         // Handle one-time events from overview
         LaunchedEffect(overviewViewModel) {
             overviewViewModel.events.collect { event ->
@@ -145,29 +159,36 @@ class DanaRSComposeContent(
             DanaScreen.PAIR_WIZARD  -> {
                 KeepScreenOnEffect()
 
+                // The wizard starts a BLE scan as soon as it is shown. Without the Bluetooth
+                // permissions that scan crashes the app, so show the wizard only after the check.
+                // The emulator has no radio to check.
+                var bleReady by remember { mutableStateOf(wizardViewModel.isEmulating) }
                 if (!wizardViewModel.isEmulating) {
                     BlePreCheckHost(
                         blePreCheck = blePreCheck,
+                        onReady = { bleReady = true },
                         onFailed = { currentScreen = DanaScreen.OVERVIEW }
                     )
                 }
 
-                LaunchedEffect(wizardViewModel) {
-                    wizardViewModel.events.collect { event ->
-                        when (event) {
-                            is PairWizardEvent.Finish -> currentScreen = DanaScreen.OVERVIEW
+                if (bleReady) {
+                    LaunchedEffect(wizardViewModel) {
+                        wizardViewModel.events.collect { event ->
+                            when (event) {
+                                is PairWizardEvent.Finish -> currentScreen = DanaScreen.OVERVIEW
+                            }
                         }
                     }
-                }
 
-                DanaRSPairWizardScreen(
-                    viewModel = wizardViewModel,
-                    onFinish = { currentScreen = DanaScreen.OVERVIEW },
-                    onCancel = {
-                        wizardViewModel.cancel()
-                        currentScreen = DanaScreen.OVERVIEW
-                    }
-                )
+                    DanaRSPairWizardScreen(
+                        viewModel = wizardViewModel,
+                        onFinish = { currentScreen = DanaScreen.OVERVIEW },
+                        onCancel = {
+                            wizardViewModel.cancel()
+                            currentScreen = DanaScreen.OVERVIEW
+                        }
+                    )
+                }
             }
 
             DanaScreen.HISTORY      -> {

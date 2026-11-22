@@ -49,17 +49,6 @@ class PreferenceMigrationsTest {
 
     // ----- The renames -----
 
-    @Test fun `activity monitor counters are renamed`() = runTest {
-        val store = storeOf("Monitor_Overview_total" to 42L, "Monitor_Overview_resumed" to 7L, "Monitor_Overview_start" to 9L)
-
-        sut().migrate(store)
-
-        assertThat(store.getLong("Monitor_total_Overview", 0L)).isEqualTo(42L)
-        assertThat(store.getLong("Monitor_resumed_Overview", 0L)).isEqualTo(7L)
-        assertThat(store.getLong("Monitor_start_Overview", 0L)).isEqualTo(9L)
-        assertThat(store.contains("Monitor_Overview_total")).isFalse()
-    }
-
     @Test fun `objectives progress is renamed`() = runTest {
         val store = storeOf("Objectives_config_started" to 1L, "Objectives_config_accomplished" to 2L)
 
@@ -135,6 +124,19 @@ class PreferenceMigrationsTest {
         assertThat(store.getString("tidepool_auth_state", "")).isEqualTo("live")
     }
 
+    /** The activity monitor was removed. Its counters go in both spellings, and its card flag too. */
+    @Test fun `activity monitor counters are removed`() = runTest {
+        val store = storeOf(
+            "Monitor_Overview_total" to 42L, "Monitor_Overview_resumed" to 7L, "Monitor_Overview_start" to 9L,
+            "Monitor_total_MainActivity" to 42L, "Monitor_resumed_MainActivity" to 7L, "Monitor_start_MainActivity" to 9L,
+            "stats_activity_expanded" to true
+        )
+
+        sut().migrate(store)
+
+        assertThat(store.getAll()).isEmpty()
+    }
+
     // ----- A migration may do more than move a key -----
 
     /**
@@ -193,12 +195,12 @@ class PreferenceMigrationsTest {
     }
 
     @Test fun `a value that will not convert never becomes a substitute`() = runTest {
-        val store = storeOf("Monitor_Overview_total" to "not a number")
+        val store = storeOf("Objectives_config_started" to "not a number")
 
         sut().migrate(store)
 
-        assertThat(store.contains("Monitor_total_Overview")).isFalse()
-        assertThat(store.contains("Monitor_Overview_total")).isTrue()
+        assertThat(store.contains("Objectives_started_config")).isFalse()
+        assertThat(store.contains("Objectives_config_started")).isTrue()
     }
 
     // ----- Properties of the whole pass -----
@@ -306,6 +308,63 @@ class PreferenceMigrationsTest {
         sut().migrate(store)
 
         assertThat(store.getString("smscommunicator_otp_password", "x")).isEmpty()
+    }
+
+    // ----- SMS Communicator moved from GENERAL to SYNC -----
+
+    /**
+     * The 3.x name, exactly as an upgrade or an old backup brings it: the config builder rename turns
+     * it into the composed `GENERAL_` name first, and this migration then carries it to `SYNC_`.
+     */
+    @Test fun `an sms communicator enabled in 3 x stays enabled under the new type`() = runTest {
+        val store = storeOf("ConfigBuilder_GENERAL_SmsCommunicatorPlugin_Enabled" to true)
+
+        sut().migrate(store)
+
+        assertThat(store.getBoolean("ConfigBuilder_Enabled_SYNC_SmsCommunicatorPlugin", false)).isTrue()
+        assertThat(store.contains("ConfigBuilder_Enabled_GENERAL_SmsCommunicatorPlugin")).isFalse()
+        assertThat(store.contains("ConfigBuilder_GENERAL_SmsCommunicatorPlugin_Enabled")).isFalse()
+    }
+
+    @Test fun `an sms communicator disabled in 3 x stays disabled`() = runTest {
+        val store = storeOf("ConfigBuilder_Enabled_GENERAL_SmsCommunicatorPlugin" to false)
+
+        sut().migrate(store)
+
+        assertThat(store.getBoolean("ConfigBuilder_Enabled_SYNC_SmsCommunicatorPlugin", true)).isFalse()
+        assertThat(store.contains("ConfigBuilder_Enabled_GENERAL_SmsCommunicatorPlugin")).isFalse()
+    }
+
+    /** What this build stored wins: it is the user's own choice, and SMS is a remote control channel. */
+    @Test fun `a choice already stored under the new type is not overwritten`() = runTest {
+        val store = storeOf(
+            "ConfigBuilder_Enabled_GENERAL_SmsCommunicatorPlugin" to true,
+            "ConfigBuilder_Enabled_SYNC_SmsCommunicatorPlugin" to false
+        )
+
+        sut().migrate(store)
+
+        assertThat(store.getBoolean("ConfigBuilder_Enabled_SYNC_SmsCommunicatorPlugin", true)).isFalse()
+        assertThat(store.contains("ConfigBuilder_Enabled_GENERAL_SmsCommunicatorPlugin")).isFalse()
+    }
+
+    @Test fun `an unreadable sms communicator row is left in place rather than deleted`() = runTest {
+        val store = storeOf("ConfigBuilder_Enabled_GENERAL_SmsCommunicatorPlugin" to "sometimes")
+
+        sut().migrate(store)
+
+        assertThat(store.contains("ConfigBuilder_Enabled_SYNC_SmsCommunicatorPlugin")).isFalse()
+        assertThat(store.getAll()["ConfigBuilder_Enabled_GENERAL_SmsCommunicatorPlugin"]).isEqualTo("sometimes")
+    }
+
+    /** Every other plugin keeps its type, so no other GENERAL row may be touched. */
+    @Test fun `another general plugin is left where it is`() = runTest {
+        val store = storeOf("ConfigBuilder_Enabled_GENERAL_AutomationPlugin" to true)
+
+        sut().migrate(store)
+
+        assertThat(store.getBoolean("ConfigBuilder_Enabled_GENERAL_AutomationPlugin", false)).isTrue()
+        assertThat(store.contains("ConfigBuilder_Enabled_SYNC_AutomationPlugin")).isFalse()
     }
 
     @Test fun `a dyn isf factor stored as text becomes a number`() = runTest {

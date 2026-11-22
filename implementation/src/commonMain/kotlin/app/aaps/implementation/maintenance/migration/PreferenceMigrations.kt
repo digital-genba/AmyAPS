@@ -18,7 +18,6 @@ import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.keys.BooleanComposedKey
 import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.IntKey
-import app.aaps.core.keys.LongComposedKey
 import app.aaps.core.keys.ProfileComposedBooleanKey
 import app.aaps.core.keys.ProfileComposedStringKey
 import app.aaps.core.keys.StringKey
@@ -109,7 +108,6 @@ class PreferenceMigrations(
         dynamicIsfRetired(sp)
         dynIsfAdjust(sp)
         smsOtpPassword(sp)
-        activityMonitor(sp)
         widgetUseBlack(sp)
         objectives(sp)
         configBuilder(sp)
@@ -118,6 +116,8 @@ class PreferenceMigrations(
         tidepool(sp)
         apsMode(sp)
         tempTargetPresets(sp)
+        activityMonitorRetired(sp)
+        smsCommunicatorType(sp)
     }
 
     /**
@@ -142,6 +142,8 @@ class PreferenceMigrations(
             sp.remove("ConfigBuilder_INSULIN_${plugin}_Enabled")
             sp.remove("ConfigBuilder_INSULIN_${plugin}_Visible")
             sp.remove("ConfigBuilder_Enabled_INSULIN_$plugin")
+            // The renamed visibility row too, or an import lists all four as names it does not know
+            sp.remove("ConfigBuilder_Visible_INSULIN_$plugin")
         }
         sp.remove("insulin_oref_peak")
     }
@@ -267,20 +269,6 @@ class PreferenceMigrations(
     private fun smsOtpPassword(sp: KeyValueStore) {
         val name = StringKey.SmsOtpPassword.key
         if (sp.contains(name) && sp.getString(name, "").length > 10) sp.putString(name, "")
-    }
-
-    /** `Monitor_<activity>_total` and friends become `Monitor_total_<activity>`. */
-    private fun activityMonitor(sp: KeyValueStore) {
-        sp.getAll().forEach { (name, value) ->
-            if (!name.startsWith("Monitor")) return@forEach
-            val destination = when {
-                name.endsWith("total")   -> LongComposedKey.ActivityMonitorTotal
-                name.endsWith("resumed") -> LongComposedKey.ActivityMonitorResumed
-                name.endsWith("start")   -> LongComposedKey.ActivityMonitorStart
-                else                     -> return@forEach
-            }
-            moveLong(sp, name, value, name.split("_").getOrNull(1), destination.key)
-        }
     }
 
     /**
@@ -441,6 +429,53 @@ class PreferenceMigrations(
         sp.remove("aps_mode")
     }
 
+    /**
+     * The activity monitor was removed, so its counters are dead keys.
+     *
+     * It counted the time spent in each Android activity. With one Compose activity for the whole app
+     * it measured nothing. Both spellings go: the legacy `Monitor_<activity>_total` and the
+     * `Monitor_total_<activity>` that a rename in this list used to turn it into. The expanded flag of
+     * its card on the statistics screen goes as well.
+     */
+    private fun activityMonitorRetired(sp: KeyValueStore) {
+        sp.getAll().keys
+            .filter { name ->
+                name.startsWith("Monitor_") &&
+                    MONITOR_COUNTERS.any { name.startsWith("Monitor_${it}_") || name.endsWith("_$it") }
+            }
+            .forEach(sp::remove)
+        if (sp.contains("stats_activity_expanded")) sp.remove("stats_activity_expanded")
+    }
+
+    /**
+     * SMS Communicator moved from `PluginType.GENERAL` to `PluginType.SYNC`, so the row that says it
+     * is enabled sits under a name this build never reads.
+     *
+     * The flag is stored as `ConfigBuilder_Enabled_<TYPE>_<Class>`, and `ConfigBuilderImpl.savePref`
+     * only ever writes the type the plugin has now. An install coming from 3.x therefore carries
+     * `ConfigBuilder_Enabled_GENERAL_SmsCommunicatorPlugin`, 4.0 asks for the `SYNC_` name, finds
+     * nothing and falls back to the default - off. SMS commands stop working after the upgrade,
+     * without a word, which for a caregiver is the whole remote control gone.
+     *
+     * This runs after [configBuilder]. That one turns the 3.x name,
+     * `ConfigBuilder_GENERAL_SmsCommunicatorPlugin_Enabled`, into the composed name above, so by the
+     * time this looks the row is in the shape 4.0 writes.
+     *
+     * The value is carried over ONLY when the `SYNC_` name is absent. Once that name exists it is
+     * what this build stored for the user - `storeSettings` writes every plugin whenever one of them
+     * is switched - and a migration must not turn a remote control channel back on over it. The
+     * `GENERAL_` name is removed either way: with the `SYNC_` name present it can never be read again.
+     */
+    private fun smsCommunicatorType(sp: KeyValueStore) {
+        val legacyName = BooleanComposedKey.ConfigBuilderEnabled.composeKey("GENERAL_SmsCommunicatorPlugin")
+        val currentName = BooleanComposedKey.ConfigBuilderEnabled.composeKey("SYNC_SmsCommunicatorPlugin")
+        val stored = sp.getAll()[legacyName] ?: return
+        val enabled = LegacyPreferenceValue.asBoolean(stored)
+            ?: return skip(legacyName, "expected true or false, found ${LegacyPreferenceValue.describeType(stored)}")
+        if (!sp.contains(currentName)) sp.putBoolean(currentName, enabled)
+        sp.remove(legacyName)
+    }
+
     /** Moves a legacy name holding a whole number to [destinationPrefix] + [argument]. */
     private fun moveLong(sp: KeyValueStore, name: String, value: Any?, argument: String?, destinationPrefix: String) {
         if (argument == null) return skip(name, "the name does not say what it belongs to")
@@ -484,6 +519,9 @@ class PreferenceMigrations(
         )
 
         val TEMP_TARGET_PRESETS = StringNonKey.TempTargetPresets.key
+
+        /** The three counters the activity monitor kept for each activity. */
+        val MONITOR_COUNTERS = listOf("start", "resumed", "total")
 
         /** The insulin curves that used to be selected through the Config Builder. */
         val INSULIN_PLUGINS = listOf(

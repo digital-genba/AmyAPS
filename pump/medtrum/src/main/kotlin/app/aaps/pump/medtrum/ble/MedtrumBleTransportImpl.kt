@@ -37,16 +37,16 @@ import app.aaps.pump.medtrum.comm.ReadDataPacket
 import app.aaps.pump.medtrum.comm.WriteCommandPackets
 import app.aaps.pump.medtrum.extension.toInt
 import app.aaps.pump.medtrum.keys.MedtrumBooleanKey
+import dev.zacsweers.metro.AppScope
+import dev.zacsweers.metro.ContributesBinding
+import dev.zacsweers.metro.Inject
+import dev.zacsweers.metro.SingleIn
+import dev.zacsweers.metro.binding
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.util.UUID
-import dev.zacsweers.metro.AppScope
-import dev.zacsweers.metro.ContributesBinding
-import dev.zacsweers.metro.SingleIn
-import dev.zacsweers.metro.binding
-import dev.zacsweers.metro.Inject
 
 @SuppressLint("MissingPermission")
 @ContributesBinding(AppScope::class, binding = binding<MedtrumBleTransport>())
@@ -143,6 +143,7 @@ class MedtrumBleTransportImpl(
             return false
         }
         if (bluetoothAdapter == null) {
+            rxBus.send(EventShowSnackbar(context.getString(app.aaps.core.ui.R.string.ble_not_supported), EventShowSnackbar.Type.Error))
             aapsLogger.error(LTag.PUMPBTCOMM, "no BluetoothAdapter: $from")
             return false
         }
@@ -301,8 +302,15 @@ class MedtrumBleTransportImpl(
     }
 
     @Synchronized
-    private fun onConnectionStateChangeSynchronized(gatt: BluetoothGatt, status: Int, newState: Int) {
+    private fun onConnectionStateChangeSynchronized(callbackGatt: BluetoothGatt, status: Int, newState: Int) {
         aapsLogger.debug(LTag.PUMPBTCOMM, "onConnectionStateChange newState: $newState status: $status")
+        if (callbackGatt !== bluetoothGatt) {
+            // Late callback from a connection we have already given up. Close that one and keep
+            // the current connection untouched.
+            aapsLogger.warn(LTag.PUMPBTCOMM, "Callback from an old gatt, closing it")
+            callbackGatt.close()
+            return
+        }
         if (newState == BluetoothProfile.STATE_CONNECTED) {
             isConnected = true
             isConnecting = false
@@ -316,14 +324,13 @@ class MedtrumBleTransportImpl(
                 }
                 SystemClock.sleep(2000)
             }
+            // Our own BleGatt, not the BluetoothGatt from the callback: it closes the gatt, gives
+            // the Bluetooth stack time to settle and clears the cached gatt and characteristics.
             gatt.close()
-            bluetoothGatt = null
-            uartRead = null
-            uartWrite = null
             isConnected = false
             isConnecting = false
             medtrumCallback?.onDisconnected()
-            aapsLogger.debug(LTag.PUMPBTCOMM, "Device disconnected: ${gatt.device.name}")
+            aapsLogger.debug(LTag.PUMPBTCOMM, "Device disconnected: ${callbackGatt.device.name}")
         }
     }
 

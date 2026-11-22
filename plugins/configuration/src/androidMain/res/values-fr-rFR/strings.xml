@@ -6,7 +6,7 @@
     <string name="previous_button">Préc</string>
     <string name="setupwizard_finish">TERMINER</string>
     <string name="welcome">Bienvenue</string>
-    <string name="welcometosetupwizard">Bienvenue dans l\'assistant de configuration. Il vous guidera tout au long du processus de configuration\n</string>
+    <string name="welcometosetupwizard">Bienvenue dans l\'assistant de configuration. Il vous guidera tout au long du processus de configuration.</string>
     <string name="end_user_license_agreement">Accord de licence de l’utilisateur final</string>
     <string name="end_user_license_agreement_text">NE DOIT PAS ÊTRE UTILISÉ POUR PRENDRE DES DÉCISIONS MÉDICALES. IL N\'Y A AUCUNE GARANTIE POUR LE PROGRAMME, DANS LA LIMITE PERMISE PAR LA LOI APPLICABLE. SAUF S\'IL EST INDIQUÉ LE CONTRAIRE PAR ÉCRIT. LES TITULAIRES DU DROIT D\'AUTEUR ET / OU D\'AUTRES PARTIES FOURNISSENT LE PROGRAMME «EN L\'ÉTAT» SANS GARANTIE D\'AUCUNE SORTE, EXPLICITE OU IMPLICITE, Y COMPRIS MAIS NON SEULEMENT AUX GARANTIES IMPLICITES DE QUALITÉ MARCHANDE ET D\'ADÉQUATION À UN USAGE PARTICULIER
 L\'ENSEMBLE DES RISQUES LIÉS À LA QUALITÉ ET À LA PERFORMANCE DU PROGRAMME SONT DE VOTRE RESPONSABILITÉ. SI LE PROGRAMME EST DÉFECTUEUX, VOUS ASSUMEZ LE COÛT DE TOUS LES SERVICES, RÉPARATIONS OU CORRECTIONS NÉCESSAIRES.</string>
@@ -28,7 +28,7 @@ L\'ENSEMBLE DES RISQUES LIÉS À LA QUALITÉ ET À LA PERFORMANCE DU PROGRAMME S
     <string name="exitwizard">Ignorer l\'assistant de configuration</string>
     <string name="setupwizard_sensitivity_description">Le plugin de Sensibilité est utilisé pour la détection de la Sensibilité et de calcul de glucides actifs. Pour plus d’informations visitez :</string>
     <string name="setupwizard_sensitivity_url">https://wiki.aaps.app/fr/latest/DailyLifeWithAaps/SensitivityDetectionAndCob.html</string>
-    <string name="setupwizard_aps_description">Sélectionnez un des algorithmes disponibles. Ils sont triés du plus ancien au plus récent. L\'algorithme plus récent est généralement plus puissant. N\'oubliez pas de lire la documentation OpenAPS et de le configurer avant de l\'utiliser.</string>
+    <string name="setupwizard_aps_description">Sélectionnez un des algorithmes disponibles. Ils sont triés du plus ancien au plus récent. Un algorithme plus récent est généralement plus puissant. N\'oubliez pas de lire la documentation OpenAPS et de le configurer avant de l\'utiliser.</string>
     <string name="setupwizard_pump_waiting_for_riley_link_connection">Veuillez configurer votre RileyLink ci-dessous. Après avoir sélectionné un RileyLink, il sera possible de continuer l\'installation une fois que le statut de RileyLink sera « Connecté ». Cela peut prendre une minute.\n</string>
     <string name="setupwizard_pump_pump_not_initialized"><b>Remarque :</b> Vous pouvez continuer l\'installation une fois la pompe configurée.\n</string>
     <string name="startobjective">Démarrez votre premier objectif</string>
@@ -41,12 +41,16 @@ L\'ENSEMBLE DES RISQUES LIÉS À LA QUALITÉ ET À LA PERFORMANCE DU PROGRAMME S
     <string name="setupwizard_client_control_info">Associer des appareils clients pour qu\'ils puissent envoyer des commandes signées à ce maître via Nightscout. C\'est le nouveau moyen recommandé pour contrôler AAPS à distance.</string>
     <string name="setupwizard_ns_receive_info">L\'acceptation des traitements et des données directement depuis Nightscout (méthode moins sécurisée) est maintenant désactivée par défaut. Ouvrez les paramètres ci-dessous uniquement si vous en avez toujours besoin. Nécessaire si vous avez besoin de saisir des données via NS ou des applications tierces.</string>
     <string name="setupwizard_open_ns_receive_settings">Acceptation des données Nightscout</string>
-    <string name="setupwizard_pair_with_master_info">Associer ce client à votre AAPS maître pour qu\'il puisse envoyer des commandes sur un canal sécurisé.</string>
+    <string name="setupwizard_pair_with_master_info">Appairer ce client à votre maître AAPS pour qu\'il puisse envoyer des commandes sur un canal sécurisé. Une fois appairé, la configuration est terminée.</string>
+    <string name="setupwizard_setup_from_master_title">Configurer depuis le maître</string>
+    <string name="setupwizard_setup_from_master_info">Sur le maître, ouvrez les clients autorisés et ajoutez ce téléphone avec un QR code. En le scannant, il met en place Nightscout avec un jeton individuel, et peut également appairer le téléphone. Sans QR code, passez cette étape et configurez Nightscout vous-même.</string>
+    <string name="setupwizard_scan_master_qr">Scanner le QR code</string>
     <string name="setupwizard_pairing_ws_warning">La connexion WebSocket Nightscout est requise pour l\'association. Retournez à l\'étape précédente et activez-la d\'abord.</string>
     <string name="setupwizard_pairing_status_master">Clients associés : %1$d</string>
     <string name="setupwizard_pairing_status_master_none">Aucun client associé pour l\'instant</string>
     <string name="setupwizard_pairing_status_client_paired">Associé à un maître</string>
     <string name="setupwizard_pairing_status_client_not_paired">Pas encore associé</string>
+    <string name="setupwizard_instance_name_title">Qui utilise ce téléphone ?</string>
     <string name="readstatus">Statut de lecture</string>
     <!-- Provider-agnostic cloud export/import strings -->
     <string name="alert_dialog_permission_battery_optimization_failed">Ce périphérique ne semble pas permettre l\'optimisation de la batterie par une liste blanche - vous pourriez rencontrer des problèmes de performance.</string>

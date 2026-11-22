@@ -141,7 +141,7 @@ anything they do. Nine need no other change at all:
 | `ProtectionCheckImpl` | `java.util.concurrent.atomic.AtomicLong` -> `kotlin.concurrent.atomics` |
 | `AutosensDataObject` | `java.util.Locale` |
 | `ActiveSceneManager` | `org.json.JSONObject` -> kotlinx, as `ProfileRepositoryImpl` did |
-| `WizardBolusExecutorImpl` | still `javax.inject`; also `ConcurrentHashMap` and `AtomicLong` |
+| `MasterActionExecutorImpl` | still `javax.inject`; also `ConcurrentHashMap` and `AtomicLong` |
 
 Left for the kmp session because it is a sweep across one module rather than iOS work. Worth doing
 mostly because each one that moves is one less thing an iOS graph cannot build - `ProtectionCheck`
@@ -232,6 +232,29 @@ Attaching them properly is a `UNNotificationCategory` per resolved label set, re
 posting and routed back by instance key. `IosLoopNotifier` already does exactly this for its "ignore
 for N minutes" buttons and is the worked example. Android cannot be copied here - it suppresses such
 notifications from the tray instead, because its actions are `PendingIntent`s.
+
+## Ready for iOS: the encrypted settings store (2026-10, not yet run on Apple)
+
+Written by the Windows session. `IosSp` and `NSUserDefaults` are gone as the settings store. iOS now
+uses the same `EncryptedKeyValueStore` (`shared/impl`) as the desktop: one file, AES-256-GCM, written
+through DataStore's okio storage, which is the only file storage DataStore has on iOS.
+
+- `ios/shell/.../prefs/IosStorage.kt` opens it once, before any graph. The file is
+  `Application Support/aaps/preferences.store`, and that folder is excluded from iCloud and computer
+  backups: the key is `ThisDeviceOnly`, so the file could not be read on another phone anyway.
+- The key is in the Keychain, service `app.aaps.settingsstore`, account `preferences`
+  (`KeychainStoreCipher` in `implementation/src/iosMain`). `Keychain.loadStrict` tells "no key" apart
+  from "the Keychain did not answer", so a locked Keychain never leads to a new key.
+- The first start moves every text, true/false and number value of the app's own defaults domain into
+  the store (`UserDefaultsMigration`), then removes those keys from `NSUserDefaults`.
+- A file that does not open with the key shows `StartupFailedScreen` (`appshell`, shared with the
+  desktop) with "Start fresh"; a Keychain that does not answer shows "Try again".
+- Graph tests call `TestStorage.install()` first: a test binary has no Keychain.
+
+Only cross compiled so far. To check on the Mac: `iosSimulatorArm64Test` (new: `EncryptedStoreFileTest`
+in `shared/impl` commonTest on a real file, `KeychainStoreCipherTest`, `UserDefaultsMigrationTest`), the
+framework link, and in the app: an existing install keeps its settings after the update, and a second
+start is clean.
 
 ## Ready for iOS: the Nightscout client
 
@@ -328,10 +351,10 @@ wrong. What is actually left:
 
 | Missing binding | Whose | Note |
 |---|---|---|
-| `Autotune` | ours, stubbed | Still worth porting: it is portable Kotlin computation, not platform code. **The no-op this row warned about now exists** - `IosAutotune` is bound and does nothing. It is not reachable from the iOS UI today (autotune is not in the shared nav graph), so nothing silently lies yet, but it would the moment it is. Checked 2026-09-21. |
+| ~~`Autotune`~~ | done | `AutotunePlugin` is common code and registers itself on every platform; iOS supplies only `IosAutotuneFileStore` (`Documents/autotune`, zip written by `StoredZip`). `IosAutotune` is deleted. Compiled for iOS, not yet run on the simulator (2026-11-15). |
 | ~~`ExportPasswordDataStore`~~ | done | Shared `ExportPasswordDataStoreImpl` is in commonMain and the iOS half is `IosExportPasswordPlatform`. This section already says so further down ("`ExportPasswordDataStore` - iOS side done"); the table simply was not updated. Checked 2026-09-21. |
 | ~~`ImportExportPrefs`~~ | done | `LocalImportExportPrefs` in commonMain serves iOS and desktop; settings export and import were run end to end on the simulator, including Google Drive. A document picker is still missing, but that is a directory-chooser gap, not a missing binding. Checked 2026-09-21. |
-| ~~`IobCobCalculator`~~ | done | `IobCobCalculatorPlugin` is in `plugins/main/src/commonMain` now, and iOS builds it through `IosHistoryWindowGraph`. The "needs a home outside :app" problem is solved. Checked 2026-09-21. |
+| ~~`IobCobCalculator`~~ | done | `IobCobCalculatorPlugin` is in `plugins/main/src/commonMain` now, and iOS builds it through `ClientHistoryWindowGraph` (shared with desktop). The "needs a home outside :app" problem is solved. Checked 2026-09-21. |
 | `UiInteraction` | ours, nearly done | `IosUiInteraction` exists and is bound. **One method left**: `runAlarm` still only logs. Note this is a different path from `setAudibleAlarm`, which does sound - see the corrected alarm entry below. Checked 2026-09-21. |
 | `NsSocketFactory` | ours, by design | Correct as written, and not a missing class: there is deliberately no `IosNsSocketFactory`. The implementation is Swift and enters as a factory parameter at start up. Checked 2026-09-21. |
 
@@ -1048,7 +1071,8 @@ Both cost a false alarm today, so they are worth writing down even though neithe
 
 - `SerialIOThreadTest.testThreadLifecycle` (`:pump:dana:danar`, unit) failed one full gate run and passed
   the four runs after it, on a tree whose only changes were iOS files.
-- `EquilEmulatorActivationTest.activatedPod_readsCancelsAndTogglesMode` (instrumented, CI shard C)
+- `EquilEmulatorActivationTest.activatedPod_readsCancelsAndTogglesMode` (instrumented, CI shard C; the
+  class was removed 2026-11-08, its checks are in `EquilScenarioTest` and `EquilUiTest`)
   failed on a push whose only non-desktop change was a markdown file and a test moving between source
   sets. Build 41072 on `kmp` failed the DanaRS instrumented shard the same way, on an About-dialog
   commit.
@@ -1098,7 +1122,7 @@ UI to act on. The prompting lives in `ProtectionHost`, which is a different ques
 
 **The trap: moving the impl alone would make iOS worse, not better.** `IosProtectionCheck` currently
 grants everything, which is wrong but at least passable while iOS reaches no pump. The real impl
-publishes to `pendingRequest` / `pendingAuthRequest` and waits for a host to call back. `AapsAppRoot`
+publishes to `pendingAuthRequest` and waits for a host to call back. `AapsAppRoot`
 places `PasswordCheckHost` but **not** `ProtectionHost` - only `ComposeMainActivity` does. So on iOS
 the request would be published, nothing would render it, and the callback would never fire: every
 protected action would hang rather than be granted or refused. That is worse than either.
@@ -1204,9 +1228,14 @@ behaviour at error teaches a reader to ignore the level that matters.
 
 `IosHistoryScope` used to throw on every property - the right placeholder, because handing back the
 app's calculation objects would have satisfied the types and let browsing history rewrite the state
-the loop calculates on. It is real now: `IosHistoryWindowGraph` is a `@GraphExtension` with its own
+the loop calculates on. It is real now: `ClientHistoryWindowGraph` is a `@GraphExtension` with its own
 scope, the counterpart of `HistoryWindowGraph`, so each window owns its calculator, cache, signals
 and overview data while sharing the database and preferences with the app.
+
+It started as `IosHistoryWindowGraph` and `IosHistoryScope` in `:ios:shell`. Both moved to
+`:shared:clientbindings` as `ClientHistoryWindowGraph` and `ClientHistoryScope` when desktop needed
+the same thing, so there is one copy for the two shells. Each shell still states its own
+`historyWindowFactory` accessor.
 
 Verified on the simulator - the History Browser opens, with the date picker, day navigation and the
 BG, IOB/BAS and COB graphs. `IosHistoryWindowScopingTest` pins the isolation by identity rather than
@@ -1416,6 +1445,19 @@ One small change: the runners are `() -> T` lambdas rather than `Provider<T>`, s
 no dependency on a DI library. Each shell passes `{ provider() }`. The KDoc explaining the cycle is
 yours, kept as it was.
 
+**Update 2026-10-13: Android uses this executor too.** On Android 16 the system stopped the
+WorkManager calculation jobs once the app had used its job time quota, so the loop did not run for
+long periods. Android now binds `AndroidCalculationExecutor` (`:workflow` androidMain), which is
+`LazyCalculationExecutor` plus a partial wake lock per run, and the WorkManager executor and its two
+workers are deleted. What reaches iOS and desktop:
+
+- `CoroutineCalculationExecutor` catches a throw in a phase and logs it as a failed phase, instead of
+  letting it reach the scope.
+- The post phase (the loop) runs only after a prepare phase that reported `Success` or `Skipped`.
+- `start` and `startPostOnly` are `suspend` now and register the run before they return, so starts
+  replace each other in call order.
+- `ClientGraphBindings` passes `wakeLock = null`.
+
 Desktop now depends on the same 26 modules `:ios:shell` lists, so the plugin bindings are in its
 graph too, and `DesktopMainPluginsBindings` is a near copy of `IosMainPluginsBindings`. If that pair
 starts to drift it should become one container in a shared module that both graphs `@Includes` -
@@ -1551,8 +1593,8 @@ build. They had drifted: the desktop copy carried five of sixteen modules, so th
 
 One list now, one task, three consumers. Android generates the `R.string` id variant so AAPT and every
 translation keep working; iOS and desktop generate the English text variant. Adding a module with
-strings is one line in `StringOwnerModules.ALL`.
+strings is one line in `StringOwnerModules.ALL` plus `registerKeyStrings("xxx")` in its build file.
 
-A module listed there but not generating strings fails the build; a module generating strings but
-missing from the list shows its names on screen. The first is the better direction, which is why the
-list is the source of truth rather than a lookup.
+Both directions fail the build now. A module listed there but not generating strings breaks the
+generated registry's imports. A module generating strings but missing from the list fails in
+`registerKeyStrings`, which takes every value from its entry in the list.

@@ -3,6 +3,7 @@ package app.aaps.pump.dana
 import app.aaps.core.data.configuration.Constants
 import app.aaps.core.data.format.NumberFormat
 import app.aaps.core.data.model.GlucoseUnit
+import app.aaps.core.data.pump.defs.PumpDescription
 import app.aaps.core.data.pump.defs.PumpType
 import app.aaps.core.data.time.T
 import app.aaps.core.interfaces.logging.AAPSLogger
@@ -11,30 +12,29 @@ import app.aaps.core.interfaces.profile.Profile
 import app.aaps.core.interfaces.profile.ProfileStore
 import app.aaps.core.interfaces.pump.DetailedBolusInfo
 import app.aaps.core.interfaces.pump.PumpSync
+import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.DecimalFormatter
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.pump.dana.keys.DanaIntNonKey
 import app.aaps.pump.dana.keys.DanaStringNonKey
+import dev.zacsweers.metro.AppScope
+import dev.zacsweers.metro.Inject
+import dev.zacsweers.metro.SingleIn
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
-import org.joda.time.DateTime
-import org.joda.time.DateTimeZone
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import java.security.InvalidParameterException
-import dev.zacsweers.metro.Inject
-import dev.zacsweers.metro.AppScope
-import dev.zacsweers.metro.SingleIn
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
-import kotlin.time.Duration.Companion.milliseconds
 
 @SingleIn(AppScope::class)
 @Inject
@@ -86,14 +86,14 @@ class DanaPump(
     var pumpTime: Long = 0
     var zoneOffset: Int = 0 // i (hw 7+)
 
+    /**
+     * Time of a pump that keeps UTC (Dana-i).
+     *
+     * @param value the time of the pump clock, read as UTC
+     * @param zoneOffset the time zone the pump keeps beside its UTC clock, in hours
+     */
     fun setPumpTime(value: Long, zoneOffset: Int) {
-        // Store time according to timezone in phone
-        val tz = DateTimeZone.getDefault()
-        val instant = DateTime.now().millis
-        val offsetInMilliseconds = tz.getOffset(instant).toLong()
-        val offset = offsetInMilliseconds.milliseconds.inWholeHours
-        pumpTime = value + T.hours(offset).msecs()
-        // but save zone in pump
+        pumpTime = value
         this.zoneOffset = zoneOffset
     }
 
@@ -106,6 +106,12 @@ class DanaPump(
         get() = hwModel >= 7
     val profile24
         get() = hwModel >= 7
+    val isDanaI2
+        get() = hwModel == 0x0B || hwModel == 0x0C
+
+    /** RS Easy, Dana-i and Dana-i2 variants that have an easy mode (it can be on or off, see [isEasyModeEnabled]) */
+    val hasEasyMode
+        get() = hwModel == 0x06 || hwModel == 0x0A || hwModel == 0x0C
 
     var protocol = 0
     var productCode = 0
@@ -119,8 +125,30 @@ class DanaPump(
     var calculatorEnabled = false
     var dailyTotalUnits = 0.0
     var maxDailyTotalUnits = 0
-    var bolusStep = 0.1
-    var basalStep = 0.1
+    // The steps the pump reported, or null before it did and after [reset]. One field for the value and for
+    // "was it read", so a thread that reads them can never see a starting value marked as read.
+    @Volatile private var readBolusStep: Double? = null
+    @Volatile private var readBasalStep: Double? = null
+
+    /** The bolus step the pump reported, else the starting 0.1. A message from the pump writes it. */
+    var bolusStep: Double
+        get() = readBolusStep ?: STARTING_STEP
+        set(value) {
+            readBolusStep = value
+        }
+
+    /** The basal step the pump reported, else the starting 0.1. A message from the pump writes it. */
+    var basalStep: Double
+        get() = readBasalStep ?: STARTING_STEP
+        set(value) {
+            readBasalStep = value
+        }
+
+    /** True once [bolusStep] was written, so it is not only the starting value. [reset] clears it. */
+    val bolusStepRead: Boolean get() = readBolusStep != null
+
+    /** True once [basalStep] was written, so it is not only the starting value. [reset] clears it. */
+    val basalStepRead: Boolean get() = readBasalStep != null
     var iob = 0.0
     private val _reservoirRemainingUnitsFlow = MutableStateFlow(0.0)
     val reservoirRemainingUnitsFlow: StateFlow<Double> = _reservoirRemainingUnitsFlow.asStateFlow()
@@ -293,7 +321,48 @@ class DanaPump(
     var cannulaVolume = 0
     var refillAmount = 0
     var target = 0 // mgdl 40~400 mmol 2.2~22 => 220~2200
+    var autoLock = false // Dana-i2 only
     var userOptionsFromPump: ByteArray? = null
+
+    /**
+     * The user options the screen saved, written by the next user options write. Kept apart from the fields above, which
+     * a settings read fills: the screen put its values there, a read queued before the write put the pump's old values
+     * back, and the old values were written and shown as saved.
+     */
+    @Volatile var userOptionsToWrite: UserOptions? = null
+
+    /** The user options the screen can change, as the pump takes them. */
+    data class UserOptions(
+        val timeDisplayType24: Boolean,
+        val buttonScrollOnOff: Boolean,
+        val beepAndAlarm: Int,
+        val lcdOnTimeSec: Int,
+        val backlightOnTimeSec: Int,
+        val units: Int,
+        val shutdownHour: Int,
+        val lowReservoirRate: Int,
+        val autoLock: Boolean
+    )
+
+    /** The user options a write sends: those the screen saved, or the ones last read from the pump. */
+    fun userOptionsForWrite(): UserOptions = userOptionsToWrite ?: UserOptions(
+        timeDisplayType24, buttonScrollOnOff, beepAndAlarm, lcdOnTimeSec, backlightOnTimeSec, units, shutdownHour, lowReservoirRate, autoLock
+    )
+
+    /** The pump took [written]: they are the pump's options now, before the next read reads them. */
+    fun userOptionsWritten(written: UserOptions) {
+        timeDisplayType24 = written.timeDisplayType24
+        buttonScrollOnOff = written.buttonScrollOnOff
+        beepAndAlarm = written.beepAndAlarm
+        lcdOnTimeSec = written.lcdOnTimeSec
+        backlightOnTimeSec = written.backlightOnTimeSec
+        units = written.units
+        shutdownHour = written.shutdownHour
+        lowReservoirRate = written.lowReservoirRate
+        autoLock = written.autoLock
+        if (userOptionsToWrite == written) userOptionsToWrite = null
+    }
+
     var initialBolusAmount = 0.0
 
     // Bolus settings
@@ -313,6 +382,17 @@ class DanaPump(
     // (bolus progress/stop messages) and the user's stop action set these - @Volatile for visibility.
     @Volatile var bolusStopped = false // bolus finished
     @Volatile var bolusStopForced = false // bolus forced to stop by user
+
+    /**
+     * The pump stopped the bolus itself: an occlusion, a shutdown or a battery error (DanaR `MsgError`). Set apart from
+     * [bolusStopped], which the pump's own end of each bolus sets too: a bolus it stopped was counted as given.
+     */
+    @Volatile var bolusStoppedByPump = false
+
+    /** What the user is told about a bolus not given in full: [given] of [asked] U. */
+    fun bolusFailure(rh: ResourceHelper, asked: Double, given: Double): String =
+        if (bolusStoppedByPump) rh.gs(app.aaps.core.ui.R.string.pump_stopped_bolus, rh.gs(app.aaps.core.interfaces.R.string.format_insulin_units, given))
+        else rh.gs(R.string.boluserrorcode, asked, given, bolusStartErrorCode)
     @Volatile var bolusDone = false // success end
     var lastEventTimeLoaded: Long = 0 // timestamp of last received event
 
@@ -437,6 +517,18 @@ class DanaPump(
             ignoreCase = true
         ) || ignoreUserPassword
 
+    /**
+     * The next status read reads all settings and the whole history again, as after [reset]. Unlike [reset] it keeps
+     * what identifies the pump and what was read: a command that runs now still writes its records for this pump. The
+     * Refresh button used [reset], and the records of a read that ran at that time were refused as coming from another
+     * pump (empty serial number).
+     */
+    fun readAllAgain() {
+        aapsLogger.debug(LTag.PUMP, "DanaRPump: read all again")
+        lastSettingsRead = 0
+        readHistoryFrom = 0
+    }
+
     fun reset() {
         aapsLogger.debug(LTag.PUMP, "DanaRPump reset")
         lastConnection = 0
@@ -448,8 +540,9 @@ class DanaPump(
         productCode = 0
         dailyTotalUnits = 0.0
         maxDailyTotalUnits = 0
-        bolusStep = 0.1
-        basalStep = 0.1
+        // Back to the starting values, which are not a reading.
+        readBolusStep = null
+        readBasalStep = null
         activeProfile = 0
         reservoirRemainingUnits = 0.0
         batteryRemaining = null
@@ -482,6 +575,8 @@ class DanaPump(
             0x06       -> "DanaRS Korean"
             0x07       -> "Dana-i (BLE4.2)"
             0x09, 0x0A -> "Dana-i (BLE5)"
+            0x0B       -> "Dana-i2"
+            0x0C       -> "Dana-i2 Korean"
             else       -> "Unknown Dana pump"
         }
 
@@ -500,8 +595,25 @@ class DanaPump(
             0x07 -> PumpType.DANA_I
             0x09 -> PumpType.DANA_I
             0x0A -> PumpType.DANA_I // Korean version
+            0x0B -> PumpType.DANA_I2
+            0x0C -> PumpType.DANA_I2 // Korean version
             else -> PumpType.DANA_RS // having here default type non TBR capable is causing problem with disabling loop
         }
+
+    /**
+     * Puts the bolus and basal steps the pump is set to into [description], once they were read.
+     *
+     * A pump can be set to a 0.1 U bolus step while its pump type says 0.05 U, and a bolus of 1.55 U
+     * was then refused (#946). Before the steps are read, and after [reset], [bolusStep] and [basalStep]
+     * hold only the starting 0.1, which is not a reading, so the steps of the pump type stay.
+     * [bolusStepRead] and [basalStepRead] say which is which. The maximums cannot: on a DanaR they come
+     * in another message than the steps, and [reset] keeps them.
+     */
+    fun applyReadSteps(description: PumpDescription): PumpDescription = description.also { d ->
+        // Each step is read once, so a reset in between cannot mix a reading with a starting value.
+        readBolusStep?.takeIf { it > 0 }?.let { d.bolusStep = it }
+        readBasalStep?.takeIf { it > 0 }?.let { d.basalStep = it }
+    }
 
     // v2, RS history entries
     enum class HistoryEntry(val value: Int) {
@@ -521,7 +633,11 @@ class DanaPump(
         PROFILE_CHANGE(13),
         CARBS(14),
         PRIME_CANNULA(15),
-        TIME_CHANGE(16)
+        TIME_CHANGE(16),
+
+        // Dana-i2 only
+        STEP_BOLUS_COMMAND(18), // Data[0] setting amount (U * 100), Data[1] command type 0 = normal, 1 = algorithm
+        BASAL_RATE_CHANGE(19) // Data[0] new rate (U/h * 100, or U/d), Data[1] 0x80 if U/d + reason flag
         ;
 
         companion object {
@@ -541,8 +657,27 @@ class DanaPump(
         const val DELIVERY_EXT_BOLUS = 0x08
         const val PROFILE_PREFIX = "DanaR-"
 
+        /**
+         * How long after the end of a bolus the pump has it in its history and in its status. A real DanaRv2 wrote the
+         * BOLUS record about 2 s after it sent the end (2026-11-10).
+         */
+        const val BOLUS_LOGGED_AFTER_END = 3000L
+
         // Dana R btModel
         const val DOMESTIC_MODEL = 0x01
         const val EXPORT_MODEL = 0x03
+
+        /** The bolus and basal step before the pump reported its own. */
+        private const val STARTING_STEP = 0.1
+
+        /** Above the error of a double, far below a percent. */
+        private const val PERCENT_EPSILON = 1e-6
+
+        /**
+         * The whole percent of [base] that [rate] is, cut as the temp basal of the pump takes it. The cut is on the exact
+         * value: 1.2 / 0.8 * 100 is 149.99999..., which a plain cut made 149, and the step down to 10 % then set 140 % for a
+         * temp basal of 150 %. 0.88 / 0.8 gave 100 %, so no temp basal at all in place of 110 %.
+         */
+        fun tempBasalPercent(rate: Double, base: Double): Int = floor(rate / base * 100 + PERCENT_EPSILON).toInt()
     }
 }

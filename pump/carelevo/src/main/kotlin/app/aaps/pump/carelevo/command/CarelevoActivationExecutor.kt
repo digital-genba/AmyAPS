@@ -1,15 +1,20 @@
 package app.aaps.pump.carelevo.command
 
+import app.aaps.core.data.pump.defs.PumpType
+import app.aaps.core.data.time.T
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.pump.PumpEnactResult
+import app.aaps.core.interfaces.pump.PumpRate
+import app.aaps.core.interfaces.pump.PumpSync
 import app.aaps.core.interfaces.queue.CustomCommand
+import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.pump.carelevo.ble.BleCommand
 import app.aaps.pump.carelevo.ble.CarelevoBleSession
-import app.aaps.pump.carelevo.ble.commands.AdditionalPrimingCommand
 import app.aaps.pump.carelevo.ble.commands.AlarmClearCommand
 import app.aaps.pump.carelevo.ble.commands.BuzzModeCommand
 import app.aaps.pump.carelevo.ble.commands.InfusionThresholdCommand
+import app.aaps.pump.carelevo.ble.commands.NeedleAckCommand
 import app.aaps.pump.carelevo.ble.commands.NeedleStatusCommand
 import app.aaps.pump.carelevo.ble.commands.NoticeThresholdCommand
 import app.aaps.pump.carelevo.ble.commands.PatchDiscardCommand
@@ -19,6 +24,7 @@ import app.aaps.pump.carelevo.ble.commands.SafetyCheckCommand
 import app.aaps.pump.carelevo.ble.commands.SetTimeCommand
 import app.aaps.pump.carelevo.ble.commands.SimpleResultResponse
 import app.aaps.pump.carelevo.common.CarelevoPatch
+import app.aaps.pump.carelevo.domain.model.ResponseResult
 import app.aaps.pump.carelevo.domain.model.bt.SafetyCheckResult
 import app.aaps.pump.carelevo.domain.model.bt.SafetyCheckResultModel
 import app.aaps.pump.carelevo.domain.type.SafetyProgress
@@ -27,20 +33,21 @@ import app.aaps.pump.carelevo.domain.usecase.alarm.AlarmClearRequestUseCase
 import app.aaps.pump.carelevo.domain.usecase.basal.CarelevoSetBasalProgramUseCase
 import app.aaps.pump.carelevo.domain.usecase.infusion.CarelevoPumpResumeUseCase
 import app.aaps.pump.carelevo.domain.usecase.infusion.CarelevoPumpStopUseCase
+import app.aaps.pump.carelevo.domain.usecase.patch.CarelevoPatchForceDiscardUseCase
 import app.aaps.pump.carelevo.domain.usecase.patch.CarelevoPatchNeedleInsertionCheckUseCase
 import app.aaps.pump.carelevo.domain.usecase.patch.CarelevoPatchSafetyCheckUseCase
 import app.aaps.pump.carelevo.domain.usecase.userSetting.CarelevoUpdateLowInsulinNoticeAmountUseCase
 import app.aaps.pump.carelevo.domain.usecase.userSetting.CarelevoUpdateMaxBolusDoseUseCase
+import dev.zacsweers.metro.AppScope
+import dev.zacsweers.metro.Inject
+import dev.zacsweers.metro.Provider
+import dev.zacsweers.metro.SingleIn
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.runBlocking
-import kotlin.time.Clock
-import dev.zacsweers.metro.Inject
-import dev.zacsweers.metro.Provider
-import dev.zacsweers.metro.AppScope
-import dev.zacsweers.metro.SingleIn
 import kotlin.jvm.optionals.getOrNull
+import kotlin.time.Clock
 
 /**
  * Runs activation operations that are routed through the AAPS [app.aaps.core.interfaces.queue.CommandQueue]
@@ -66,7 +73,10 @@ class CarelevoActivationExecutor @Inject constructor(
     private val updateLowInsulinNoticeAmountUseCase: CarelevoUpdateLowInsulinNoticeAmountUseCase,
     private val alarmClearRequestUseCase: AlarmClearRequestUseCase,
     private val alarmClearPatchDiscardUseCase: AlarmClearPatchDiscardUseCase,
-    private val bleSession: CarelevoBleSession
+    private val patchForceDiscardUseCase: CarelevoPatchForceDiscardUseCase,
+    private val bleSession: CarelevoBleSession,
+    private val pumpSync: PumpSync,
+    private val dateUtil: DateUtil
 ) {
 
     private companion object {
@@ -77,6 +87,7 @@ class CarelevoActivationExecutor @Inject constructor(
         private const val TIMEZONE_SUB_ID = 1 // set-time subId = 1 for the timezone/DST update path
         private const val TIMEZONE_AID_MODE = 0 // set-time aidMode = 0
         private const val NEEDLE_CHECK_TIMEOUT_MS = 90_000L // physical cannula insertion may take a while
+        private const val NEEDLE_ACK_TIMEOUT_MS = 5_000L // the patch answers at once; it must not hold up the wizard
         private const val SAFETY_PROGRESS_HEADROOM_SEC = 30 // Progress timeout = firstFrame.durationSeconds + 30
     }
 
@@ -112,7 +123,7 @@ class CarelevoActivationExecutor @Inject constructor(
      */
     private fun runSetBasal(): PumpEnactResult {
         val result = pumpEnactResultProvider()
-        val profile = carelevoPatch.profile.value?.getOrNull()
+        val profile = runBlocking { carelevoPatch.activationProfile(pumpSync) }
             ?: return result.success(false).enacted(false).comment("profile not set")
         val address = carelevoPatch.getPatchInfoAddress()
             ?: return result.success(false).enacted(false).comment("no patch address")
@@ -139,6 +150,7 @@ class CarelevoActivationExecutor @Inject constructor(
         val result = pumpEnactResultProvider()
         val address = carelevoPatch.getPatchInfoAddress()
             ?: return result.success(false).enacted(false).comment("no patch address")
+        val extendedBolusRan = carelevoPatch.infusionInfo.value?.getOrNull()?.extendBolusInfusionInfo != null
         return try {
             val response = runBlocking {
                 bleSession.runSingle(address, PumpStopCommand(durationMinutes = durationMin, subId = STOP_RESUME_SUB_ID))
@@ -147,6 +159,7 @@ class CarelevoActivationExecutor @Inject constructor(
                 aapsLogger.error(LTag.PUMPCOMM, "newBle.pumpStop rejected result=${response.resultCode}")
                 return result.success(false).enacted(false).comment("stop result ${response.resultCode}")
             }
+            recordStop(durationMin, extendedBolusRan)
             val persisted = pumpStopUseCase.persistStopped(durationMin)
             aapsLogger.info(LTag.PUMPCOMM, "newBle.pumpStop OK durationMin=$durationMin persisted=$persisted")
             result.success(persisted).enacted(persisted)
@@ -168,6 +181,7 @@ class CarelevoActivationExecutor @Inject constructor(
                 aapsLogger.error(LTag.PUMPCOMM, "newBle.pumpResume rejected result=${response.resultCode}")
                 return result.success(false).enacted(false).comment("resume result ${response.resultCode}")
             }
+            recordResume()
             val persisted = pumpResumeUseCase.persistResumed()
             aapsLogger.info(LTag.PUMPCOMM, "newBle.pumpResume OK persisted=$persisted")
             result.success(persisted).enacted(persisted)
@@ -176,6 +190,40 @@ class CarelevoActivationExecutor @Inject constructor(
             result.success(false).enacted(false).comment(e.message ?: "error")
         }
     }
+
+    /**
+     * The record of a stop the patch confirmed: a 0 U/h temp basal of type PUMP_SUSPEND, and the end of an extended bolus
+     * that ran. Written here, with the command, so it does not depend on the screen that asked for it: the screen wrote
+     * it after the queue returned, and when the screen was gone by then, AAPS counted basal the patch did not give.
+     */
+    private fun recordStop(durationMin: Int, extendedBolusRan: Boolean) = runBlocking {
+        val now = dateUtil.now()
+        val serial = patchSerial()
+        pumpSync.syncTemporaryBasalWithPumpId(
+            timestamp = now,
+            rate = PumpRate(0.0),
+            duration = T.mins(durationMin.toLong()).msecs(),
+            isAbsolute = true,
+            type = PumpSync.TemporaryBasalType.PUMP_SUSPEND,
+            pumpId = now,
+            pumpType = PumpType.CAREMEDI_CARELEVO,
+            pumpSerial = serial
+        )
+        // Only an extended bolus that really ran: the end of the record ends whatever it finds.
+        if (extendedBolusRan) pumpSync.syncStopExtendedBolusWithPumpId(now, now, PumpType.CAREMEDI_CARELEVO, serial)
+    }
+
+    /**
+     * The end of the stop record when the patch confirmed a resume, here for the same reason as [recordStop]. Only when
+     * AAPS has a temp basal: an end with none would write a record of its own.
+     */
+    private fun recordResume() = runBlocking {
+        if (pumpSync.expectedPumpState().temporaryBasal == null) return@runBlocking
+        val now = dateUtil.now()
+        pumpSync.syncStopTemporaryBasalWithPumpId(now, now, PumpType.CAREMEDI_CARELEVO, patchSerial())
+    }
+
+    private fun patchSerial(): String = carelevoPatch.patchInfo.value?.getOrNull()?.manufactureNumber ?: ""
 
     /**
      * Buzzer setting via [BuzzModeCommand] (0x18 → 0x78). Pure write, no persistence (the preference is
@@ -334,7 +382,15 @@ class CarelevoActivationExecutor @Inject constructor(
             aapsLogger.error(LTag.PUMPCOMM, "newBle.discard stop exception", e)
             false
         }
-        if (stopped) carelevoPatch.discardTeardown()
+        if (stopped) {
+            // Delete the stored patch and infusion info, as the discard did before it moved to the queue. The teardown
+            // below clears only the copies in memory: without this, the discarded patch was loaded again at the next
+            // start of AAPS, and AAPS kept connecting to it instead of offering a new activation.
+            val deleted = patchForceDiscardUseCase.execute().blockingGet()
+            if (deleted !is ResponseResult.Success) aapsLogger.error(LTag.PUMPCOMM, "newBle.discard could not delete the stored patch: $deleted")
+            // Pass the address read before the delete: the copy in memory may already be empty, and the bond would stay.
+            carelevoPatch.discardTeardown(address)
+        }
         aapsLogger.info(LTag.PUMPCOMM, "newBle.discard stopped=$stopped")
         return result.success(stopped).enacted(stopped)
     }
@@ -351,6 +407,7 @@ class CarelevoActivationExecutor @Inject constructor(
         return try {
             val response = runBlocking {
                 bleSession.runSingle(address, NeedleStatusCommand(), timeoutMs = NEEDLE_CHECK_TIMEOUT_MS)
+                    .also { if (it.resultCode == RESULT_SUCCESS) confirmNeedleInsertion(address) }
             }
             val inserted = response.resultCode == RESULT_SUCCESS
             val persisted = needleCheckUseCase.persistNeedleResult(inserted)
@@ -360,6 +417,20 @@ class CarelevoActivationExecutor @Inject constructor(
         } catch (e: Exception) {
             aapsLogger.error(LTag.PUMPCOMM, "newBle.needleCheck FAILED", e)
             result.success(false).enacted(false).comment(e.message ?: "error")
+        }
+    }
+
+    /**
+     * Tells the patch that the app got the insertion result (0x19 → 0x7A), as the vendor app did. The patch waits for
+     * it: without it, a real patch raised "Patch Activation Incomplete" about 20 minutes later. It does not fail the
+     * check. The cannula is in, and the user can still finish the activation from that alarm.
+     */
+    private suspend fun confirmNeedleInsertion(address: String) {
+        try {
+            val ack = bleSession.runSingle(address, NeedleAckCommand(isSuccess = true), timeoutMs = NEEDLE_ACK_TIMEOUT_MS)
+            aapsLogger.info(LTag.PUMPCOMM, "newBle.needleAck result=${ack.resultCode}")
+        } catch (e: Exception) {
+            aapsLogger.warn(LTag.PUMPCOMM, "newBle.needleAck not confirmed: ${e.message}")
         }
     }
 

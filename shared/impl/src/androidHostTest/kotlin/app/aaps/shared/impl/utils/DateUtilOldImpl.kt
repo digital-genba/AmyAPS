@@ -349,54 +349,6 @@ class DateUtilOldImpl(private val context: Context) {
         return result
     }
 
-    fun age(milliseconds: Long, useShortText: Boolean, rh: ResourceHelper): String {
-        val diff = computeDiff(0L, milliseconds)
-        var days = " " + rh.gs(R.string.days) + " "
-        var hours = " " + rh.gs(R.string.hours) + " "
-        var minutes = " " + rh.gs(R.string.unit_minutes) + " "
-        if (useShortText) {
-            days = " " + rh.gs(R.string.shortday) + " "
-            hours = " " + rh.gs(R.string.shorthour) + " "
-            minutes = " " + rh.gs(R.string.shortminute) + " "
-        }
-        if (T.msecs(milliseconds).days() > 1000) return rh.gs(R.string.forever)
-        var result = ""
-        if (diff.getOrDefault(TimeUnit.DAYS, -1) > 0) result += diff[TimeUnit.DAYS].toString() + days
-        if (diff.getOrDefault(TimeUnit.HOURS, -1) > 0) result += diff[TimeUnit.HOURS].toString() + hours
-        if (diff[TimeUnit.DAYS] == 0L) result += diff[TimeUnit.MINUTES].toString() + minutes
-        return result
-    }
-
-    fun niceTimeScalar(time: Long, rh: ResourceHelper): String {
-        var t = time
-        var unit = rh.gs(R.string.unit_second)
-        t /= 1000
-        if (t != 1L) unit = rh.gs(R.string.unit_seconds)
-        if (t > 59) {
-            unit = rh.gs(R.string.unit_minute)
-            t /= 60
-            if (t != 1L) unit = rh.gs(R.string.unit_minutes)
-            if (t > 59) {
-                unit = rh.gs(R.string.unit_hour)
-                t /= 60
-                if (t != 1L) unit = rh.gs(R.string.unit_hours)
-                if (t > 24) {
-                    unit = rh.gs(R.string.unit_day)
-                    t /= 24
-                    if (t != 1L) unit = rh.gs(R.string.unit_days)
-                    if (t > 28) {
-                        unit = rh.gs(R.string.unit_week)
-                        t /= 7
-                        @Suppress("KotlinConstantConditions")
-                        if (t != 1L) unit = rh.gs(R.string.unit_weeks)
-                    }
-                }
-            }
-        }
-        //if (t != 1) unit = unit + "s"; //implemented plurality in every step, because in other languages plurality of time is not every time adding the same character
-        return qs(t.toDouble(), 0) + " " + unit
-    }
-
     fun qs(x: Double, numDigits: Int): String {
         var digits = numDigits
         if (digits == -1) {

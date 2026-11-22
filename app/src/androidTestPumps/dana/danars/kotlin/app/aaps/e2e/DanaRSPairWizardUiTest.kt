@@ -1,7 +1,6 @@
 package app.aaps.e2e
 
 import android.Manifest
-import android.content.Context
 import android.os.SystemClock
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -12,9 +11,6 @@ import androidx.test.uiautomator.StaleObjectException
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 import androidx.work.WorkManager
-import app.aaps.di.ResetGraphRule
-import app.aaps.di.testGraphs
-import app.aaps.pump.danars.di.DanaRSAccessors
 import app.aaps.ComposeMainActivity
 import app.aaps.core.data.plugin.PluginType
 import app.aaps.core.data.ue.Action
@@ -28,7 +24,10 @@ import app.aaps.core.keys.StringKey
 import app.aaps.core.objects.extensions.singleBlock
 import app.aaps.core.objects.extensions.singleTargetBlock
 import app.aaps.di.EmulatedOptions
+import app.aaps.di.ResetGraphRule
+import app.aaps.di.testGraphs
 import app.aaps.pump.dana.keys.DanaStringNonKey
+import app.aaps.pump.danars.di.DanaRSAccessors
 import app.aaps.pump.danars.emulator.EmulatorBleTransport
 import app.aaps.testcategories.ShardB
 import com.google.common.truth.Truth.assertThat
@@ -39,7 +38,6 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.RuleChain
 import org.junit.runner.RunWith
-import java.io.File
 import java.util.regex.Pattern
 
 /**
@@ -299,13 +297,7 @@ class DanaRSPairWizardUiTest {
         return null
     }
 
-    private fun clearAllSharedPrefs() {
-        val ctx = instrumentation.targetContext
-        File(ctx.applicationInfo.dataDir, "shared_prefs").listFiles()?.forEach { f ->
-            if (f.name.endsWith(".xml"))
-                ctx.getSharedPreferences(f.name.removeSuffix(".xml"), Context.MODE_PRIVATE).edit().clear().commit()
-        }
-    }
+    private fun clearAllSharedPrefs() = clearAppSettings(instrumentation.targetContext)
 
     companion object {
 

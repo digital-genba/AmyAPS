@@ -5,12 +5,6 @@
     <string name="settings_protection">设置保护</string>
     <string name="application_protection">应用保护</string>
     <string name="bolus_protection">大剂量安全验证</string>
-    <string name="settings_password">设置密码</string>
-    <string name="settings_pin">设置 PIN 码</string>
-    <string name="application_password">应用程序密码</string>
-    <string name="application_pin">应用程序 PIN 码</string>
-    <string name="bolus_password">大剂量密码</string>
-    <string name="bolus_pin">大剂量 PIN 码</string>
     <string name="protection_timeout_title">密码与 PIN 保留时长 [秒]</string>
     <string name="protection_timeout_summary">密码 / PIN 有效时长</string>
     <!-- Protection type entries moved to core/keys/strings.xml -->
@@ -33,4 +27,5 @@
     <string name="current_master_password">当前主密码</string>
     <string name="master_password_not_set">未设置主密码</string>
     <string name="aaps_directory_not_selected">未选择 AAPS 目录</string>
+    <string name="aaps_directory_access_lost">对 AAPS 目录的访问权限已丢失，因此设置不再保存到手机。请重新选择该目录。</string>
 </resources>

@@ -1,23 +1,20 @@
 package app.aaps.pump.carelevo.coordinator
 
-import app.aaps.core.data.pump.defs.PumpType
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
-import app.aaps.core.interfaces.pump.PumpSync
 import app.aaps.core.interfaces.queue.CommandQueue
-import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.pump.carelevo.ble.CarelevoBleTransport
 import app.aaps.pump.carelevo.command.CmdAlarmClear
 import app.aaps.pump.carelevo.command.CmdAlarmClearPatchDiscard
 import app.aaps.pump.carelevo.command.CmdPumpResume
 import app.aaps.pump.carelevo.common.CarelevoPatch
 import app.aaps.pump.carelevo.domain.model.alarm.CarelevoAlarmInfo
+import app.aaps.pump.carelevo.domain.type.AlarmCause
+import dev.zacsweers.metro.AppScope
+import dev.zacsweers.metro.Inject
+import dev.zacsweers.metro.SingleIn
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import dev.zacsweers.metro.Inject
-import dev.zacsweers.metro.AppScope
-import dev.zacsweers.metro.SingleIn
-import kotlin.jvm.optionals.getOrNull
 
 /**
  * The alarm-clear BLE operations, shared by both clear-alarm surfaces (the Android notification action in
@@ -32,9 +29,7 @@ class CarelevoAlarmClearCoordinator @Inject constructor(
     private val aapsLogger: AAPSLogger,
     private val commandQueue: CommandQueue,
     private val carelevoPatch: CarelevoPatch,
-    private val transport: CarelevoBleTransport,
-    private val pumpSync: PumpSync,
-    private val dateUtil: DateUtil
+    private val transport: CarelevoBleTransport
 ) {
 
     // Serialize the queue ops across BOTH surfaces (this is an app-scoped singleton): CommandQueue.customCommand dedups
@@ -54,6 +49,8 @@ class CarelevoAlarmClearCoordinator @Inject constructor(
         commandQueue.customCommand(CmdAlarmClearPatchDiscard(info.alarmId, info.alarmType, info.cause)).success
     }
 
+    fun forgetSnapshotAlarmCause(cause: AlarmCause) = carelevoPatch.forgetSnapshotAlarmCause(cause)
+
     /**
      * Can a discard op plausibly reach the patch? Used by the patch-ABANDON paths (serious warning
      * discard) to decide between a graceful queue discard and an immediate local force-quit. With
@@ -65,27 +62,14 @@ class CarelevoAlarmClearCoordinator @Inject constructor(
         carelevoPatch.getPatchInfoAddress() != null && carelevoPatch.isBluetoothEnabled()
 
     /**
-     * Resume infusion; syncs the TBR-cancel to NS on success. Used both after an auto-suspend alarm and by
-     * the Resume button on the overview screen
+     * Resume infusion. Used both after an auto-suspend alarm and by the Resume button on the overview screen
      * ([app.aaps.pump.carelevo.presentation.viewmodel.CarelevoOverviewViewModel.startPumpResume]), so that
      * the two cannot queue a `CmdPumpResume` at the same time and make one of them misread a class-level
-     * dedup as a resume failure.
+     * dedup as a resume failure. The command itself ends the stop record (CarelevoActivationExecutor): ended here,
+     * after the queue returned, it stayed open when the caller's coroutine was cancelled by then.
      */
     suspend fun resumeInfusion(): Boolean = opMutex.withLock {
-        val success = commandQueue.customCommand(CmdPumpResume()).success
-        if (success) {
-            // Only record a TBR stop if AAPS actually believes one is running — an unguarded stop
-            // would write a spurious end-marker into treatment history on a plain resume.
-            if (pumpSync.expectedPumpState().temporaryBasal != null) {
-                pumpSync.syncStopTemporaryBasalWithPumpId(
-                    timestamp = dateUtil.now(),
-                    endPumpId = dateUtil.now(),
-                    pumpType = PumpType.CAREMEDI_CARELEVO,
-                    pumpSerial = carelevoPatch.patchInfo.value?.getOrNull()?.manufactureNumber ?: ""
-                )
-            }
-        }
-        success
+        commandQueue.customCommand(CmdPumpResume()).success
     }
 
     /**

@@ -12,6 +12,7 @@ import app.aaps.pump.diaconn.DiaconnG8Pump
 import app.aaps.pump.diaconn.keys.DiaconnIntKey
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.ContributesIntoMap
+import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.binding
 import dev.zacsweers.metrox.viewmodel.ViewModelKey
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -20,7 +21,6 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import dev.zacsweers.metro.Inject
 
 data class DiaconnUserOptionsUiState(
     val beepAndAlarm: Int = 1,      // 1=sound, 2=vibrate, 3=silent
@@ -84,36 +84,24 @@ class DiaconnUserOptionsViewModel(
 
     fun saveAlarm() {
         val state = _uiState.value
-        diaconnG8Pump.setUserOptionType = DiaconnG8Pump.ALARM
-        diaconnG8Pump.beepAndAlarm = state.beepAndAlarm
-        diaconnG8Pump.alarmIntensity = state.alarmIntensity
-        saveToCommandQueue()
+        save(DiaconnG8Pump.UserOption(DiaconnG8Pump.ALARM, state.beepAndAlarm, state.alarmIntensity))
     }
 
-    fun saveLcdOnTime() {
-        val state = _uiState.value
-        diaconnG8Pump.setUserOptionType = DiaconnG8Pump.LCD
-        diaconnG8Pump.lcdOnTimeSec = state.lcdOnTimeSec
-        saveToCommandQueue()
-    }
+    fun saveLcdOnTime() = save(DiaconnG8Pump.UserOption(DiaconnG8Pump.LCD, _uiState.value.lcdOnTimeSec))
 
-    fun saveLanguage() {
-        val state = _uiState.value
-        diaconnG8Pump.setUserOptionType = DiaconnG8Pump.LANG
-        diaconnG8Pump.selectedLanguage = state.selectedLanguage
-        saveToCommandQueue()
-    }
+    fun saveLanguage() = save(DiaconnG8Pump.UserOption(DiaconnG8Pump.LANG, _uiState.value.selectedLanguage))
 
+    /** The bolus speed goes to the pump before the next bolus, see the observer of the setting in `DiaconnG8Service`. */
     fun saveBolusSpeed() {
         val state = _uiState.value
         diaconnG8Pump.bolusSpeed = state.bolusSpeed
         diaconnG8Pump.speed = state.bolusSpeed
-        diaconnG8Pump.setUserOptionType = DiaconnG8Pump.BOLUS_SPEED
         preferences.put(DiaconnIntKey.BolusSpeed, state.bolusSpeed)
         _events.tryEmit(DiaconnUserOptionsEvent.Saved)
     }
 
-    private fun saveToCommandQueue() {
+    private fun save(option: DiaconnG8Pump.UserOption) {
+        diaconnG8Pump.userOptionToSet = option
         viewModelScope.launch {
             val result = commandQueue.setUserOptions()
             if (result.success) {

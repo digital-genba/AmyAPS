@@ -6,13 +6,13 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
 import app.aaps.core.data.pump.defs.PumpType
-import app.aaps.core.interfaces.di.PumpDriver
 import app.aaps.core.interfaces.configuration.Config
+import app.aaps.core.interfaces.di.PumpDriver
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.notifications.NotificationManager
-import app.aaps.core.interfaces.plugin.PluginBase
 import app.aaps.core.interfaces.plugin.ActivePlugin
+import app.aaps.core.interfaces.plugin.PluginBase
 import app.aaps.core.interfaces.pump.BolusProgressData
 import app.aaps.core.interfaces.pump.DetailedBolusInfo
 import app.aaps.core.interfaces.pump.PumpEnactResult
@@ -20,7 +20,6 @@ import app.aaps.core.interfaces.pump.PumpInsulin
 import app.aaps.core.interfaces.pump.PumpSync
 import app.aaps.core.interfaces.pump.PumpSync.TemporaryBasalType
 import app.aaps.core.interfaces.pump.comment
-import app.aaps.core.interfaces.pump.defs.fillFor
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.rx.bus.RxBus
@@ -38,6 +37,11 @@ import app.aaps.pump.dana.database.DanaHistoryDatabase
 import app.aaps.pump.dana.keys.DanaBooleanKey
 import app.aaps.pump.dana.keys.DanaIntKey
 import app.aaps.pump.danar.services.DanaRExecutionService
+import dev.zacsweers.metro.AppScope
+import dev.zacsweers.metro.ContributesIntoMap
+import dev.zacsweers.metro.Inject
+import dev.zacsweers.metro.SingleIn
+import dev.zacsweers.metro.binding
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -46,14 +50,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
-import dev.zacsweers.metro.AppScope
-import dev.zacsweers.metro.ContributesIntoMap
-import dev.zacsweers.metro.IntKey as MetroIntKey
-import dev.zacsweers.metro.binding
-import dev.zacsweers.metro.Inject
-import dev.zacsweers.metro.SingleIn
 import kotlin.math.abs
 import kotlin.math.max
+import dev.zacsweers.metro.IntKey as MetroIntKey
 
 @ContributesIntoMap(AppScope::class, binding = binding<PluginBase>())
 @PumpDriver
@@ -76,6 +75,7 @@ class DanaRPlugin(
     danaHistoryDatabase: DanaHistoryDatabase,
     decimalFormatter: DecimalFormatter,
     private val bolusProgressData: BolusProgressData,
+    private val bolusInProgress: BolusInProgress,
     pumpEnactResultProvider: () -> PumpEnactResult
 ) : AbstractDanaRPlugin(
     danaPump,
@@ -108,10 +108,6 @@ class DanaRPlugin(
     }
 
     private var scope: CoroutineScope? = null
-
-    init {
-        pumpDescription.fillFor(PumpType.DANA_R)
-    }
 
     override suspend fun onStart() {
         val intent = Intent(context, DanaRExecutionService::class.java)
@@ -164,20 +160,29 @@ class DanaRPlugin(
             throw IllegalArgumentException(detailedBolusInfo.toString(), Exception())
         }
         // Already constrained in IU (queue) and in cU (PumpWithConcentration boundary); no re-apply here.
+        // Kept until the bolus is recorded: after an app kill during the bolus, a status read records it from this.
+        bolusInProgress.save(dateUtil.now(), detailedBolusInfo.insulin, detailedBolusInfo.bolusType)
+        try {
+            return giveBolus(detailedBolusInfo)
+        } finally {
+            bolusInProgress.clear()
+        }
+    }
+
+    private suspend fun giveBolus(detailedBolusInfo: DetailedBolusInfo): PumpEnactResult {
         var resultOK = false
         if (detailedBolusInfo.insulin > 0) resultOK = executionService?.bolus(detailedBolusInfo) == true
         val result = pumpEnactResultProvider()
         val delivered = bolusProgressData.state.value?.delivered ?: PumpInsulin(0.0)
-        result.success(resultOK && (abs(detailedBolusInfo.insulin - delivered.cU) < pumpDescription.bolusStep || danaPump.bolusStopped))
+        val givenInFull = abs(detailedBolusInfo.insulin - delivered.cU) < pumpDescription.bolusStep
+        // The pump's own end of a bolus sets bolusStopped too, so a stop counts as done. One the pump stopped itself (an
+        // occlusion, a shutdown, a battery error) was counted as given in the same way, and the user was not told.
+        result.success(resultOK && (givenInFull || danaPump.bolusStopped && !danaPump.bolusStoppedByPump))
             .bolusDelivered(delivered.cU)
-        if (!result.success) result.comment(
-            rh.gs(
-                app.aaps.pump.dana.R.string.boluserrorcode,
-                detailedBolusInfo.insulin,
-                delivered.cU,
-                danaPump.bolusStartErrorCode
-            )
-        ) else result.comment(app.aaps.core.ui.R.string.ok)
+        // Enacted = the pump really gave insulin. A stopped bolus can be a success with nothing given.
+        result.enacted(result.success && delivered.cU > 0)
+        if (!result.success) result.comment(danaPump.bolusFailure(rh, detailedBolusInfo.insulin, delivered.cU))
+        else result.comment(app.aaps.core.ui.R.string.ok)
         aapsLogger.debug(LTag.PUMP, "deliverTreatment: OK. Asked: " + detailedBolusInfo.insulin + " Delivered: " + result.bolusDelivered)
         detailedBolusInfo.insulin = delivered.cU
         detailedBolusInfo.timestamp = System.currentTimeMillis()
@@ -210,7 +215,7 @@ class DanaRPlugin(
         val doLowTemp = absoluteRate < baseBasalRate.cU || absoluteRate < 0.10
         val doHighTemp = absoluteRate > baseBasalRate.cU && !preferences.get(DanaBooleanKey.UseExtended)
         val doExtendedTemp = absoluteRate > baseBasalRate.cU && preferences.get(DanaBooleanKey.UseExtended)
-        var percentRate = (absoluteRate / baseBasalRate.cU * 100).toInt()
+        var percentRate = DanaPump.tempBasalPercent(absoluteRate, baseBasalRate.cU)
         // Any basal less than 0.10u/h will be dumped once per hour, not every 4 minutes. So if it's less than .10u/h, set a zero temp.
         if (absoluteRate < 0.10) percentRate = 0
         percentRate =

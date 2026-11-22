@@ -1,15 +1,11 @@
 package app.aaps.plugins.sync.nsclientV3.clientcontrol
 
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.test.runTest
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.notifications.NotificationAction
 import app.aaps.core.interfaces.notifications.NotificationId
 import app.aaps.core.interfaces.notifications.NotificationLevel
 import app.aaps.core.interfaces.notifications.NotificationManager
-import app.aaps.plugins.sync.SyncStringsValues
-import app.aaps.shared.tests.generatedTextResolver
 import app.aaps.core.keys.LongNonKey
 import app.aaps.core.keys.StringNonKey
 import app.aaps.core.keys.interfaces.Preferences
@@ -17,10 +13,14 @@ import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.nssdk.localmodel.clientcontrol.MasterPairing
 import app.aaps.core.nssdk.localmodel.configuration.NSAuthorizedClients
 import app.aaps.core.nssdk.localmodel.configuration.NSRunningConfiguration
+import app.aaps.plugins.sync.SyncStringsValues
+import app.aaps.shared.tests.generatedTextResolver
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.Mock
@@ -64,6 +64,48 @@ internal class OrphanDetectorTest {
         NSRunningConfiguration(authorizedClients = NSAuthorizedClients(clientIds = clientIds.toList()))
 
     private fun configWithoutRosterField() = NSRunningConfiguration() // authorizedClients = null
+
+    private fun configWithRoles(roles: Map<String, String>?) =
+        NSRunningConfiguration(authorizedClients = NSAuthorizedClients(clientIds = listOf(ourClientId), roles = roles))
+
+    // -- this phone's role, kept from the roster ----------------------------------------------
+
+    @Test
+    fun ownRoleFromTheRosterIsStored() = runTest {
+        sut.onSettingsDoc(configWithRoles(mapOf(ourClientId to "MealAssistant", "other" to "Admin")), docSrvModified = now)
+        verify(preferences).put(StringNonKey.NsClientControlRole, "MealAssistant")
+    }
+
+    @Test
+    fun aRosterWithoutRolesIsAnOlderMasterSoFullControlStays() = runTest {
+        sut.onSettingsDoc(configWithRoles(null), docSrvModified = now)
+        verify(preferences).put(StringNonKey.NsClientControlRole, "Admin")
+    }
+
+    @Test
+    fun rolesWithoutThisPhoneMeanReadOnly() = runTest {
+        sut.onSettingsDoc(configWithRoles(mapOf("other" to "Admin")), docSrvModified = now)
+        verify(preferences).put(StringNonKey.NsClientControlRole, "ReadOnly")
+    }
+
+    /**
+     * Just paired: the doc in flight is from before the pairing, so it cannot list this phone. It must not turn the role
+     * the pairing came with into ReadOnly - the client showed only Manage until the master's next roster.
+     */
+    @Test
+    fun aDocFromBeforeThePairingKeepsTheRoleOfThePairing() = runTest {
+        pairedAt = now
+        val staleDoc = NSRunningConfiguration(authorizedClients = NSAuthorizedClients(clientIds = listOf("other"), roles = mapOf("other" to "Admin")))
+        sut.onSettingsDoc(staleDoc, docSrvModified = now - 4_000L)
+        verify(preferences, never()).put(eq(StringNonKey.NsClientControlRole), any<String>())
+    }
+
+    @Test
+    fun anUnchangedRoleIsNotWrittenAgain() = runTest {
+        whenever(preferences.get(StringNonKey.NsClientControlRole)).thenReturn("Caregiver")
+        sut.onSettingsDoc(configWithRoles(mapOf(ourClientId to "Caregiver")), docSrvModified = now)
+        verify(preferences, never()).put(eq(StringNonKey.NsClientControlRole), any<String>())
+    }
 
     /**
      * Old master that doesn't publish the roster yet. Block absent on the wire is the

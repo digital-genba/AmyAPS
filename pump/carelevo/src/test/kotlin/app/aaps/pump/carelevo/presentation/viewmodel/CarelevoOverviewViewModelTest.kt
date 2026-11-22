@@ -3,9 +3,11 @@ package app.aaps.pump.carelevo.presentation.viewmodel
 import android.content.Context
 import androidx.lifecycle.viewModelScope
 import app.aaps.core.interfaces.logging.AAPSLogger
+import app.aaps.core.interfaces.notifications.NotificationId
+import app.aaps.core.interfaces.notifications.NotificationLevel
+import app.aaps.core.interfaces.notifications.NotificationManager
 import app.aaps.core.interfaces.profile.Profile
 import app.aaps.core.interfaces.pump.PumpEnactResult
-import app.aaps.core.interfaces.pump.PumpSync
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.interfaces.queue.CustomCommand
 import app.aaps.core.interfaces.resources.ResourceHelper
@@ -15,10 +17,7 @@ import app.aaps.core.interfaces.rx.events.EventPumpStatusChanged
 import app.aaps.core.interfaces.rx.events.EventQueueChanged
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.DecimalFormatter
-import app.aaps.core.interfaces.R as InterfacesR
-import app.aaps.core.ui.R as CoreUiR
 import app.aaps.core.ui.compose.StatusLevel
-import app.aaps.core.ui.compose.pump.ActionCategory
 import app.aaps.core.ui.compose.pump.PumpInfoRow
 import app.aaps.pump.carelevo.R
 import app.aaps.pump.carelevo.ble.CarelevoBleSession
@@ -38,6 +37,7 @@ import app.aaps.pump.carelevo.domain.model.patch.CarelevoPatchInfoDomainModel
 import app.aaps.pump.carelevo.domain.model.result.ResultSuccess
 import app.aaps.pump.carelevo.domain.usecase.CarelevoUseCaseRequest
 import app.aaps.pump.carelevo.domain.usecase.CarelevoUseCaseResponse
+import app.aaps.pump.carelevo.domain.repository.CarelevoPatchInfoRepository
 import app.aaps.pump.carelevo.domain.usecase.infusion.CarelevoDeleteInfusionInfoUseCase
 import app.aaps.pump.carelevo.domain.usecase.infusion.model.CarelevoDeleteInfusionRequestModel
 import app.aaps.pump.carelevo.domain.usecase.patch.CarelevoPatchForceDiscardUseCase
@@ -62,10 +62,6 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
-import kotlin.time.Clock
-import kotlin.time.Instant
-import kotlin.time.Duration.Companion.days
-import kotlin.time.Duration.Companion.hours
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -74,6 +70,7 @@ import org.mockito.kotlin.after
 import org.mockito.kotlin.any
 import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.argumentCaptor
+import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.timeout
@@ -84,7 +81,6 @@ import org.mockito.kotlin.whenever
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
-import java.time.Instant as JavaInstant
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -92,6 +88,12 @@ import java.time.temporal.ChronoUnit
 import java.util.Locale
 import java.util.Optional
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.hours
+import kotlin.time.Instant
+import app.aaps.core.interfaces.R as InterfacesR
+import app.aaps.core.ui.R as CoreUiR
+import java.time.Instant as JavaInstant
 
 /**
  * Unit tests for [CarelevoOverviewViewModel] — the Carelevo overview screen's state assembly, the
@@ -109,7 +111,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  * **Dispatcher strategy.** `Dispatchers.setMain(UnconfinedTestDispatcher())` makes `viewModelScope`
  * eager: `triggerEvent`, `startDiscardProcess`, `startPumpStopProcess`, `startPumpResume` and
  * `refreshPatchInfusionInfo` all run their `launch { }` bodies in-line, so the terminal state can be
- * asserted straight after the call. `setUiState` writes the flow straight through, with no `launch`. The suspend [CommandQueue]/[PumpSync]
+ * asserted straight after the call. `setUiState` writes the flow straight through, with no `launch`. The suspend [CommandQueue]
  * members are Mockito stubs and never really suspend, so nothing needs virtual time to be advanced.
  * Deliberately **no `advanceUntilIdle()`**: `overviewUiState` combines an endless `tickerFlow(30 s)`
  * whose `delay` is virtual, so advancing to idle would never terminate. The ticker's first emission
@@ -136,7 +138,7 @@ class CarelevoOverviewViewModelTest {
     private val context: Context = RuntimeEnvironment.getApplication()
 
     private lateinit var rh: ResourceHelper
-    private lateinit var pumpSync: PumpSync
+    private lateinit var notificationManager: NotificationManager
     private lateinit var dateUtil: DateUtil
     private lateinit var commandQueue: CommandQueue
     private lateinit var aapsLogger: AAPSLogger
@@ -144,6 +146,7 @@ class CarelevoOverviewViewModelTest {
     private lateinit var aapsSchedulers: AapsSchedulers
     private lateinit var patchForceDiscardUseCase: CarelevoPatchForceDiscardUseCase
     private lateinit var deleteInfusionInfoUseCase: CarelevoDeleteInfusionInfoUseCase
+    private lateinit var patchInfoRepository: CarelevoPatchInfoRepository
     private lateinit var rxBus: RxBus
     private lateinit var decimalFormatter: DecimalFormatter
     private lateinit var bleSession: CarelevoBleSession
@@ -281,7 +284,6 @@ class CarelevoOverviewViewModelTest {
     @Before
     fun setUp() {
         rh = mock()
-        pumpSync = mock()
         dateUtil = mock()
         commandQueue = mock()
         aapsLogger = mock()
@@ -289,7 +291,9 @@ class CarelevoOverviewViewModelTest {
         aapsSchedulers = mock()
         patchForceDiscardUseCase = mock()
         deleteInfusionInfoUseCase = mock()
+        patchInfoRepository = mock()
         rxBus = mock()
+        notificationManager = mock()
         decimalFormatter = mock()
         // Deterministic, locale-independent 2-decimal text (the real impl is locale aware).
         whenever(decimalFormatter.to2Decimal(any<Double>())).thenAnswer { inv -> "%.2f".format(Locale.US, inv.getArgument<Double>(0)) }
@@ -341,7 +345,7 @@ class CarelevoOverviewViewModelTest {
 
         sut = CarelevoOverviewViewModel(
             rh = rh,
-            pumpSync = pumpSync,
+            notificationManager = notificationManager,
             dateUtil = dateUtil,
             commandQueue = commandQueue,
             aapsLogger = aapsLogger,
@@ -351,6 +355,7 @@ class CarelevoOverviewViewModelTest {
             aapsSchedulers = aapsSchedulers,
             patchForceDiscardUseCase = patchForceDiscardUseCase,
             carelevoDeleteInfusionInfoUseCase = deleteInfusionInfoUseCase,
+            patchInfoRepository = patchInfoRepository,
             rxBus = rxBus,
             decimalFormatter = decimalFormatter
         )
@@ -756,12 +761,27 @@ class CarelevoOverviewViewModelTest {
 
     @Test
     fun `observeInfusionInfo re-latches the needle screen when the infusion record is gone`() {
-        patchInfoSubject.onNext(Optional.of(patchInfo(checkNeedle = true)))
+        whenever(patchInfoRepository.getPatchInfoBySync()).thenReturn(patchInfo(checkNeedle = true))
         sut.observeInfusionInfo()
 
         infusionSubject.onNext(Optional.empty())
 
         assertThat(sut.isCheckScreen.value).isEqualTo(CarelevoScreenType.NEEDLE_INSERTION)
+    }
+
+    /**
+     * Seen on a real patch: after a discard the patch stream still held the old patch (needle in) when the infusion
+     * record was already gone, and the new activation wizard opened at the needle step. The store decides.
+     */
+    @Test
+    fun `observeInfusionInfo does not reopen the needle step for a discarded patch`() {
+        patchInfoSubject.onNext(Optional.of(patchInfo(checkNeedle = true)))
+        whenever(patchInfoRepository.getPatchInfoBySync()).thenReturn(null)
+        sut.observeInfusionInfo()
+
+        infusionSubject.onNext(Optional.empty())
+
+        assertThat(sut.isCheckScreen.value).isNull()
     }
 
     @Test
@@ -776,7 +796,7 @@ class CarelevoOverviewViewModelTest {
 
     @Test
     fun `observeInfusionInfo does not latch the needle screen while the needle is not yet inserted`() {
-        patchInfoSubject.onNext(Optional.of(patchInfo(checkNeedle = false)))
+        whenever(patchInfoRepository.getPatchInfoBySync()).thenReturn(patchInfo(checkNeedle = false))
         sut.observeInfusionInfo()
 
         infusionSubject.onNext(Optional.empty())
@@ -827,7 +847,7 @@ class CarelevoOverviewViewModelTest {
     // ---- clearExpiredInfusions (driven by the init second-tick) --------------------------------
 
     @Test
-    fun `the second tick deletes every infusion whose window has elapsed`() {
+    fun `the second tick deletes every elapsed infusion except an immediate bolus`() {
         val past = Clock.System.now() - 2.hours
         infusionSubject.onNext(
             Optional.of(
@@ -843,7 +863,8 @@ class CarelevoOverviewViewModelTest {
         // atLeastOnce: the ticker keeps firing, so a strict times(1) could race a second tick.
         val captor = argumentCaptor<CarelevoUseCaseRequest>()
         verify(deleteInfusionInfoUseCase, timeout(3_000).atLeastOnce()).execute(captor.capture())
-        assertThat(captor.firstValue).isEqualTo(CarelevoDeleteInfusionRequestModel(true, true, true))
+        // A left immediate bolus can be one the app never recorded; the bolus coordinator records it, then removes it.
+        assertThat(captor.firstValue).isEqualTo(CarelevoDeleteInfusionRequestModel(true, false, true))
     }
 
     @Test
@@ -979,7 +1000,7 @@ class CarelevoOverviewViewModelTest {
 
         verifyBlocking(commandQueue) { customCommand(any<CmdDiscard>()) }
         // The queue's CmdDiscard owns unBond + releasePatch; the VM must not double-tear-down.
-        verify(carelevoPatch, never()).discardTeardown()
+        verify(carelevoPatch, never()).discardTeardown(anyOrNull())
         verify(patchForceDiscardUseCase, never()).execute()
         assertThat(sut.uiState.value).isEqualTo(UiState.Idle)
         assertThat(events).isEmpty()
@@ -995,9 +1016,11 @@ class CarelevoOverviewViewModelTest {
         sut.startDiscardProcess()
 
         verify(patchForceDiscardUseCase).execute()
-        verify(carelevoPatch).discardTeardown()
+        verify(carelevoPatch).discardTeardown(anyOrNull())
         assertThat(sut.uiState.value).isEqualTo(UiState.Idle)
         assertThat(events).isEmpty()
+        // The patch was not told to stop: the user is told to take it off (D9).
+        verify(notificationManager).post(eq(NotificationId.PUMP_WARNING), any<String>(), eq(NotificationLevel.IMPORTANT), any<Int>(), anyOrNull(), any(), anyOrNull())
     }
 
     @Test
@@ -1009,7 +1032,7 @@ class CarelevoOverviewViewModelTest {
         sut.startDiscardProcess()
 
         assertThat(events).containsExactly(CarelevoOverviewEvent.DiscardFailed)
-        verify(carelevoPatch, never()).discardTeardown()
+        verify(carelevoPatch, never()).discardTeardown(anyOrNull())
         assertThat(sut.uiState.value).isEqualTo(UiState.Idle)
     }
 
@@ -1022,7 +1045,7 @@ class CarelevoOverviewViewModelTest {
         sut.startDiscardProcess()
 
         assertThat(events).containsExactly(CarelevoOverviewEvent.DiscardFailed)
-        verify(carelevoPatch, never()).discardTeardown()
+        verify(carelevoPatch, never()).discardTeardown(anyOrNull())
         assertThat(sut.uiState.value).isEqualTo(UiState.Idle)
     }
 
@@ -1035,7 +1058,7 @@ class CarelevoOverviewViewModelTest {
         sut.startDiscardProcess()
 
         assertThat(events).containsExactly(CarelevoOverviewEvent.DiscardFailed)
-        verify(carelevoPatch, never()).discardTeardown()
+        verify(carelevoPatch, never()).discardTeardown(anyOrNull())
         assertThat(sut.uiState.value).isEqualTo(UiState.Idle)
     }
 
@@ -1052,8 +1075,9 @@ class CarelevoOverviewViewModelTest {
         assertThat(sut.uiState.value).isEqualTo(UiState.Idle)
     }
 
+    /** The stop command records the stop itself (see CarelevoActivationExecutorTest), not the screen. */
     @Test
-    fun `startPumpStopProcess stops an idle pump and syncs the suspension`() {
+    fun `startPumpStopProcess stops an idle pump`() {
         bluetoothEnabled = true
         patchInfoSubject.onNext(Optional.of(patchInfo(manufactureNumber = "SN-0001")))
         stubCustomCommand(success = true)
@@ -1066,11 +1090,6 @@ class CarelevoOverviewViewModelTest {
         // Nothing was running → no pre-cancel round-trips.
         verifyBlocking(commandQueue, never()) { cancelTempBasal(any(), any()) }
         verifyBlocking(commandQueue, never()) { cancelExtended() }
-        verifyBlocking(pumpSync) {
-            syncTemporaryBasalWithPumpId(any(), any(), any(), any(), anyOrNull(), any(), any(), any())
-        }
-        // Nothing was running → no extended-bolus cut either; the transaction ends whatever it finds.
-        verifyBlocking(pumpSync, never()) { syncStopExtendedBolusWithPumpId(any(), any(), any(), any()) }
         verify(deleteInfusionInfoUseCase).execute(CarelevoDeleteInfusionRequestModel(false, false, false))
         assertThat(sut.uiState.value).isEqualTo(UiState.Idle)
         assertThat(events).isEmpty()
@@ -1105,7 +1124,6 @@ class CarelevoOverviewViewModelTest {
         verifyBlocking(commandQueue) { cancelExtended() }
         verifyBlocking(commandQueue, never()) { cancelTempBasal(any(), any()) }
         verifyBlocking(commandQueue) { customCommand(any<CmdPumpStop>()) }
-        verifyBlocking(pumpSync) { syncStopExtendedBolusWithPumpId(any(), any(), any(), any()) }
         verify(deleteInfusionInfoUseCase).execute(CarelevoDeleteInfusionRequestModel(false, false, true))
         assertThat(events).isEmpty()
     }
@@ -1167,26 +1185,8 @@ class CarelevoOverviewViewModelTest {
         sut.startPumpStopProcess(30)
 
         assertThat(events).containsExactly(CarelevoOverviewEvent.StopPumpFailed)
-        // A failed stop must not fabricate a suspension in the DB.
-        verifyBlocking(pumpSync, never()) {
-            syncTemporaryBasalWithPumpId(any(), any(), any(), any(), anyOrNull(), any(), any(), any())
-        }
         verify(deleteInfusionInfoUseCase, never()).execute(any())
         assertThat(sut.uiState.value).isEqualTo(UiState.Idle)
-    }
-
-    @Test
-    fun `startPumpStopProcess syncs an empty serial when no patch report has arrived`() {
-        bluetoothEnabled = true
-        infusionSubject.onNext(Optional.of(CarelevoInfusionInfoDomainModel(extendBolusInfusionInfo = extendBolus())))
-        stubCancelExtended(success = true)
-        stubCustomCommand(success = true)
-
-        sut.startPumpStopProcess(30)
-
-        val serial = argumentCaptor<String>()
-        verifyBlocking(pumpSync) { syncStopExtendedBolusWithPumpId(any(), any(), any(), serial.capture()) }
-        assertThat(serial.firstValue).isEqualTo("")
     }
 
     /**
@@ -1207,9 +1207,6 @@ class CarelevoOverviewViewModelTest {
         sut.startPumpStopProcess(30)
 
         verifyBlocking(commandQueue, times(1)) { customCommand(any()) }
-        verifyBlocking(pumpSync, times(1)) {
-            syncTemporaryBasalWithPumpId(any(), any(), any(), any(), anyOrNull(), any(), any(), any())
-        }
         assertThat(sut.uiState.value).isEqualTo(UiState.Idle)
     }
 
@@ -1237,30 +1234,11 @@ class CarelevoOverviewViewModelTest {
         assertThat(sut.uiState.value).isEqualTo(UiState.Idle)
     }
 
-    /** One instant for the record and for its dedup key, so the two cannot drift apart. */
+    /** A stop that throws must not leave the screen behind the Loading scrim, nor hold the lock. */
     @Test
-    fun `startPumpStopProcess writes the suspension with one instant for timestamp and pump id`() {
+    fun `startPumpStopProcess releases the screen when the stop throws`() {
         bluetoothEnabled = true
-        stubCustomCommand(success = true)
-
-        sut.startPumpStopProcess(30)
-
-        val timestamp = argumentCaptor<Long>()
-        val pumpId = argumentCaptor<Long>()
-        verifyBlocking(pumpSync) {
-            syncTemporaryBasalWithPumpId(timestamp.capture(), any(), any(), any(), anyOrNull(), pumpId.capture(), any(), any())
-        }
-        assertThat(timestamp.firstValue).isEqualTo(nowMillis)
-        assertThat(pumpId.firstValue).isEqualTo(nowMillis)
-    }
-
-    /** A throwing DB write must not leave the screen behind the Loading scrim, nor hold the lock. */
-    @Test
-    fun `startPumpStopProcess releases the screen when the suspension sync throws`() {
-        bluetoothEnabled = true
-        stubCustomCommand(success = true)
-        whenever { pumpSync.syncTemporaryBasalWithPumpId(any(), any(), any(), any(), anyOrNull(), any(), any(), any()) }
-            .thenThrow(RuntimeException("database unavailable"))
+        whenever { commandQueue.customCommand(any()) }.thenThrow(RuntimeException("queue unavailable"))
 
         sut.startPumpStopProcess(30)
 
@@ -1287,8 +1265,8 @@ class CarelevoOverviewViewModelTest {
     /**
      * The resume goes through [CarelevoAlarmClearCoordinator] rather than queueing its own
      * `CmdPumpResume`, so that the button and an alarm-driven resume take the same app-scoped mutex —
-     * [CommandQueue.customCommand] dedups by command class and would fail the second one. The TBR-stop
-     * sync that follows a successful resume belongs to the coordinator and is covered by its own test.
+     * [CommandQueue.customCommand] dedups by command class and would fail the second one. The end of the stop
+     * record belongs to the resume command and is covered by CarelevoActivationExecutorTest.
      */
     @Test
     fun `startPumpResume goes through the coordinator instead of queueing its own frame`() {
@@ -1300,7 +1278,6 @@ class CarelevoOverviewViewModelTest {
 
         verifyBlocking(alarmClearCoordinator) { resumeInfusion() }
         verifyBlocking(commandQueue, never()) { customCommand(any()) }
-        verifyBlocking(pumpSync, never()) { syncStopTemporaryBasalWithPumpId(any(), any(), any(), any(), any()) }
         assertThat(sut.uiState.value).isEqualTo(UiState.Idle)
         assertThat(events).isEmpty()
     }
@@ -1313,7 +1290,6 @@ class CarelevoOverviewViewModelTest {
         sut.startPumpResume()
 
         assertThat(events).containsExactly(CarelevoOverviewEvent.ResumePumpFailed)
-        verifyBlocking(pumpSync, never()) { syncStopTemporaryBasalWithPumpId(any(), any(), any(), any(), any()) }
         assertThat(sut.uiState.value).isEqualTo(UiState.Idle)
     }
 
@@ -1333,7 +1309,6 @@ class CarelevoOverviewViewModelTest {
         assertThat(infoRows()[0].value).isEqualTo(s(R.string.carelevo_state_none_value))
         assertThat(state.primaryActions).hasSize(1)
         assertThat(state.primaryActions[0].label).isEqualTo(s(R.string.carelevo_overview_connect_btn_label))
-        assertThat(state.primaryActions[0].category).isEqualTo(ActionCategory.PRIMARY)
         assertThat(state.managementActions).isEmpty()
     }
 
@@ -1370,7 +1345,6 @@ class CarelevoOverviewViewModelTest {
         assertThat(state.primaryActions).isEmpty()
         assertThat(state.managementActions).hasSize(2)
         assertThat(state.managementActions[0].label).isEqualTo(s(R.string.carelevo_overview_pump_discard_btn_label))
-        assertThat(state.managementActions[0].category).isEqualTo(ActionCategory.MANAGEMENT)
         assertThat(state.managementActions[1].label).isEqualTo(s(R.string.carelevo_overview_pump_suspend_btn_label))
     }
 

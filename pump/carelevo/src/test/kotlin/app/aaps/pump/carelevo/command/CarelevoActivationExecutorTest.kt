@@ -1,10 +1,15 @@
 package app.aaps.pump.carelevo.command
 
+import app.aaps.core.data.pump.defs.PumpType
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.profile.Profile
 import app.aaps.core.interfaces.pump.PumpEnactResult
-import app.aaps.core.keys.interfaces.TextRef
+import app.aaps.core.interfaces.pump.PumpProfile
+import app.aaps.core.interfaces.pump.PumpSync
 import app.aaps.core.interfaces.queue.CustomCommand
+import app.aaps.core.interfaces.utils.DateUtil
+import app.aaps.core.keys.interfaces.TextRef
+import app.aaps.pump.carelevo.ble.BleCommand
 import app.aaps.pump.carelevo.ble.BleResponse
 import app.aaps.pump.carelevo.ble.CarelevoBleSession
 import app.aaps.pump.carelevo.ble.commands.AlarmClearResponse
@@ -15,18 +20,27 @@ import app.aaps.pump.carelevo.ble.commands.SafetyCheckCommand
 import app.aaps.pump.carelevo.ble.commands.SafetyCheckResponse
 import app.aaps.pump.carelevo.ble.commands.SimpleResultResponse
 import app.aaps.pump.carelevo.common.CarelevoPatch
+import app.aaps.pump.carelevo.domain.model.ResponseResult
+import app.aaps.pump.carelevo.domain.model.infusion.CarelevoExtendBolusInfusionInfoDomainModel
+import app.aaps.pump.carelevo.domain.model.infusion.CarelevoInfusionInfoDomainModel
+import app.aaps.pump.carelevo.domain.model.patch.CarelevoPatchInfoDomainModel
+import app.aaps.pump.carelevo.domain.model.result.ResultSuccess
 import app.aaps.pump.carelevo.domain.type.AlarmCause
 import app.aaps.pump.carelevo.domain.type.SafetyProgress
+import app.aaps.pump.carelevo.domain.usecase.CarelevoUseCaseResponse
 import app.aaps.pump.carelevo.domain.usecase.alarm.AlarmClearPatchDiscardUseCase
 import app.aaps.pump.carelevo.domain.usecase.alarm.AlarmClearRequestUseCase
 import app.aaps.pump.carelevo.domain.usecase.basal.CarelevoSetBasalProgramUseCase
 import app.aaps.pump.carelevo.domain.usecase.infusion.CarelevoPumpResumeUseCase
 import app.aaps.pump.carelevo.domain.usecase.infusion.CarelevoPumpStopUseCase
+import app.aaps.pump.carelevo.domain.usecase.patch.CarelevoPatchForceDiscardUseCase
 import app.aaps.pump.carelevo.domain.usecase.patch.CarelevoPatchNeedleInsertionCheckUseCase
 import app.aaps.pump.carelevo.domain.usecase.patch.CarelevoPatchSafetyCheckUseCase
 import app.aaps.pump.carelevo.domain.usecase.userSetting.CarelevoUpdateLowInsulinNoticeAmountUseCase
 import app.aaps.pump.carelevo.domain.usecase.userSetting.CarelevoUpdateMaxBolusDoseUseCase
 import com.google.common.truth.Truth.assertThat
+import dev.zacsweers.metro.Provider
+import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.subjects.BehaviorSubject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -39,14 +53,17 @@ import org.mockito.Mock
 import org.mockito.junit.jupiter.MockitoExtension
 import org.mockito.junit.jupiter.MockitoSettings
 import org.mockito.kotlin.any
+import org.mockito.kotlin.anyOrNull
+import org.mockito.kotlin.argumentCaptor
+import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
+import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.verifyBlocking
 import org.mockito.kotlin.whenever
 import org.mockito.quality.Strictness
 import java.util.Optional
-import dev.zacsweers.metro.Provider
 
 /**
  * JVM unit tests for [CarelevoActivationExecutor]. Every op is driven through the public [CarelevoActivationExecutor.execute]
@@ -69,7 +86,10 @@ internal class CarelevoActivationExecutorTest {
     @Mock lateinit var updateLowInsulinNoticeAmountUseCase: CarelevoUpdateLowInsulinNoticeAmountUseCase
     @Mock lateinit var alarmClearRequestUseCase: AlarmClearRequestUseCase
     @Mock lateinit var alarmClearPatchDiscardUseCase: AlarmClearPatchDiscardUseCase
+    @Mock lateinit var patchForceDiscardUseCase: CarelevoPatchForceDiscardUseCase
     @Mock lateinit var bleSession: CarelevoBleSession
+    @Mock lateinit var pumpSync: PumpSync
+    @Mock lateinit var dateUtil: DateUtil
 
     private val pumpEnactResultProvider = Provider<PumpEnactResult> { FakePumpEnactResult() }
 
@@ -90,8 +110,18 @@ internal class CarelevoActivationExecutorTest {
             updateLowInsulinNoticeAmountUseCase = updateLowInsulinNoticeAmountUseCase,
             alarmClearRequestUseCase = alarmClearRequestUseCase,
             alarmClearPatchDiscardUseCase = alarmClearPatchDiscardUseCase,
-            bleSession = bleSession
+            patchForceDiscardUseCase = patchForceDiscardUseCase,
+            bleSession = bleSession,
+            pumpSync = pumpSync,
+            dateUtil = dateUtil
         )
+        whenever(dateUtil.now()).thenReturn(NOW)
+        // Nothing runs and no patch report came, unless a test says so.
+        whenever(carelevoPatch.infusionInfo).thenReturn(BehaviorSubject.createDefault(Optional.empty<CarelevoInfusionInfoDomainModel>()))
+        whenever(carelevoPatch.patchInfo).thenReturn(BehaviorSubject.createDefault(Optional.empty<CarelevoPatchInfoDomainModel>()))
+        // No profile switch requested, unless a test asks for one.
+        whenever { pumpSync.expectedPumpState() }.thenReturn(pumpState(profile = null))
+        whenever(patchForceDiscardUseCase.execute()).thenReturn(Single.just<ResponseResult<CarelevoUseCaseResponse>>(ResponseResult.Success(ResultSuccess)))
         // Happy default: a patch address is stored. Individual "no address" tests re-stub to null.
         whenever(carelevoPatch.getPatchInfoAddress()).thenReturn(ADDRESS)
     }
@@ -102,6 +132,9 @@ internal class CarelevoActivationExecutorTest {
         val profile = mock<Profile>()
         whenever(carelevoPatch.profile).thenReturn(BehaviorSubject.createDefault(Optional.of(profile)))
     }
+
+    private fun pumpState(profile: PumpProfile?) =
+        PumpSync.PumpState(temporaryBasal = null, extendedBolus = null, bolus = null, profile = profile, serialNumber = "SN")
 
     private fun stubBasalPlan() {
         whenever(setBasalUseCase.buildBasalProgramPlan(any())).thenReturn(
@@ -170,6 +203,25 @@ internal class CarelevoActivationExecutorTest {
         assertThat(result?.success).isFalse()
         assertThat(result?.enacted).isFalse()
         assertThat(result?.comment).isEqualTo("profile not set")
+    }
+
+    /**
+     * A first patch: the queue drops the profile while no patch is paired, so the patch model has none. The basal is
+     * the requested profile, as the Equil wizard takes it. Found by the emulator scenario test.
+     */
+    @Test fun `setBasal takes the requested profile when the patch has none`() {
+        val requested = mock<PumpProfile>()
+        whenever(carelevoPatch.profile).thenReturn(BehaviorSubject.createDefault(Optional.empty<Profile>()))
+        whenever { pumpSync.expectedPumpState() }.thenReturn(pumpState(profile = requested))
+        stubBasalPlan()
+        whenever { bleSession.runBasalProgram(any(), any(), any()) }.thenReturn(true)
+        whenever(setBasalUseCase.persistBasalProgram(any())).thenReturn(true)
+
+        val result = sut.execute(CmdSetBasal())
+
+        assertThat(result?.success).isTrue()
+        verify(setBasalUseCase).buildBasalProgramPlan(requested)
+        verify(carelevoPatch).setProfile(requested)
     }
 
     @Test fun `setBasal returns no-patch-address when profile present but address missing`() {
@@ -275,6 +327,81 @@ internal class CarelevoActivationExecutorTest {
         assertThat(result?.success).isFalse()
         assertThat(result?.comment).isEqualTo("resume result 5")
         verify(pumpResumeUseCase, never()).persistResumed()
+    }
+
+    // ---- the stop record: written by the command, so it does not depend on the screen that asked for the stop ----
+
+    @Test fun `pumpStop records the stop with one instant and the patch serial`() {
+        val patch = mock<CarelevoPatchInfoDomainModel>()
+        whenever(patch.manufactureNumber).thenReturn("SN-0001")
+        whenever(carelevoPatch.patchInfo).thenReturn(BehaviorSubject.createDefault(Optional.of(patch)))
+        stubRunSingle(SimpleResultResponse(resultCode = 0))
+        whenever(pumpStopUseCase.persistStopped(any())).thenReturn(true)
+
+        sut.execute(CmdPumpStop(durationMin = 30))
+
+        val duration = argumentCaptor<Long>()
+        verifyBlocking(pumpSync) {
+            syncTemporaryBasalWithPumpId(
+                eq(NOW), any(), duration.capture(), eq(true), eq(PumpSync.TemporaryBasalType.PUMP_SUSPEND), eq(NOW),
+                eq(PumpType.CAREMEDI_CARELEVO), eq("SN-0001")
+            )
+        }
+        assertThat(duration.firstValue).isEqualTo(30 * 60_000L)
+        verifyBlocking(pumpSync, never()) { syncStopExtendedBolusWithPumpId(any(), any(), any(), any()) }
+    }
+
+    @Test fun `pumpStop ends an extended bolus that ran and gives an empty serial when no patch report came`() {
+        whenever(carelevoPatch.infusionInfo).thenReturn(
+            BehaviorSubject.createDefault(Optional.of(CarelevoInfusionInfoDomainModel(extendBolusInfusionInfo = mock<CarelevoExtendBolusInfusionInfoDomainModel>())))
+        )
+        stubRunSingle(SimpleResultResponse(resultCode = 0))
+        whenever(pumpStopUseCase.persistStopped(any())).thenReturn(true)
+
+        sut.execute(CmdPumpStop(durationMin = 30))
+
+        verifyBlocking(pumpSync) { syncStopExtendedBolusWithPumpId(eq(NOW), eq(NOW), eq(PumpType.CAREMEDI_CARELEVO), eq("")) }
+    }
+
+    @Test fun `pumpStop the patch refused records nothing`() {
+        stubRunSingle(SimpleResultResponse(resultCode = 1))
+
+        sut.execute(CmdPumpStop(durationMin = 30))
+
+        verifyBlocking(pumpSync, never()) { syncTemporaryBasalWithPumpId(any(), any(), any(), any(), anyOrNull(), any(), any(), any()) }
+    }
+
+    @Test fun `pumpResume ends the stop record when AAPS has a temp basal`() {
+        val stop = PumpSync.PumpState.TemporaryBasal(
+            timestamp = 0L, duration = 60_000L, rate = 0.0, isAbsolute = true, type = PumpSync.TemporaryBasalType.PUMP_SUSPEND,
+            id = 1L, pumpId = 0L, pumpType = PumpType.CAREMEDI_CARELEVO, pumpSerial = "SN"
+        )
+        whenever { pumpSync.expectedPumpState() }.thenReturn(
+            PumpSync.PumpState(temporaryBasal = stop, extendedBolus = null, bolus = null, profile = null, serialNumber = "SN")
+        )
+        stubRunSingle(PumpResumeResponse(resultCode = 0, mode = 1, subId = 0))
+        whenever(pumpResumeUseCase.persistResumed()).thenReturn(true)
+
+        sut.execute(CmdPumpResume())
+
+        verifyBlocking(pumpSync) { syncStopTemporaryBasalWithPumpId(eq(NOW), eq(NOW), eq(PumpType.CAREMEDI_CARELEVO), any(), any()) }
+    }
+
+    @Test fun `pumpResume writes no end when AAPS has no temp basal`() {
+        stubRunSingle(PumpResumeResponse(resultCode = 0, mode = 1, subId = 0))
+        whenever(pumpResumeUseCase.persistResumed()).thenReturn(true)
+
+        sut.execute(CmdPumpResume())
+
+        verifyBlocking(pumpSync, never()) { syncStopTemporaryBasalWithPumpId(any(), any(), any(), any(), any()) }
+    }
+
+    @Test fun `pumpResume the patch refused ends nothing`() {
+        stubRunSingle(PumpResumeResponse(resultCode = 1, mode = 1, subId = 0))
+
+        sut.execute(CmdPumpResume())
+
+        verifyBlocking(pumpSync, never()) { syncStopTemporaryBasalWithPumpId(any(), any(), any(), any(), any()) }
     }
 
     @Test fun `pumpResume success when accepted and persisted`() {
@@ -458,26 +585,37 @@ internal class CarelevoActivationExecutorTest {
         assertThat(result?.comment).isEqualTo("no patch address")
     }
 
-    @Test fun `discard tears down and succeeds when the stop write is accepted`() {
+    @Test fun `discard deletes the stored patch, tears down and succeeds when the stop write is accepted`() {
         stubRunSingle(SimpleResultResponse(resultCode = 0))
+        whenever(patchForceDiscardUseCase.execute()).thenReturn(Single.just(ResponseResult.Success(ResultSuccess)))
         val result = sut.execute(CmdDiscard())
         assertThat(result?.success).isTrue()
         assertThat(result?.enacted).isTrue()
-        verify(carelevoPatch).discardTeardown()
+        verify(patchForceDiscardUseCase).execute()
+        // The bond is removed with the address read before the stored patch was deleted.
+        verify(carelevoPatch).discardTeardown(ADDRESS)
+    }
+
+    /** Seen on the Pixel: the teardown cleared only memory, and the discarded patch was back after a restart. */
+    @Test fun `an accepted discard deletes the stored patch and infusion info`() {
+        stubRunSingle(SimpleResultResponse(resultCode = 0))
+        sut.execute(CmdDiscard())
+        verify(patchForceDiscardUseCase).execute()
     }
 
     @Test fun `discard does not tear down and fails when the stop write is rejected`() {
         stubRunSingle(SimpleResultResponse(resultCode = 1))
         val result = sut.execute(CmdDiscard())
         assertThat(result?.success).isFalse()
-        verify(carelevoPatch, never()).discardTeardown()
+        verify(patchForceDiscardUseCase, never()).execute()
+        verify(carelevoPatch, never()).discardTeardown(anyOrNull())
     }
 
     @Test fun `discard swallows the write exception and fails without teardown`() {
         stubRunSingleThrows()
         val result = sut.execute(CmdDiscard())
         assertThat(result?.success).isFalse()
-        verify(carelevoPatch, never()).discardTeardown()
+        verify(carelevoPatch, never()).discardTeardown(anyOrNull())
     }
 
     // endregion
@@ -519,6 +657,44 @@ internal class CarelevoActivationExecutorTest {
         val result = sut.execute(CmdNeedleCheck())
         assertThat(result?.success).isFalse()
         assertThat(result?.comment).isEqualTo(BOOM)
+    }
+
+    /** The commands the executor sent, in order, as their wire bytes. */
+    private fun sentCommands(count: Int): List<List<Byte>> = argumentCaptor<BleCommand<BleResponse>>().run {
+        verifyBlocking(bleSession, times(count)) { runSingle(any(), capture(), any()) }
+        allValues.map { it.encode().toList() }
+    }
+
+    /** A real patch raised "Patch Activation Incomplete" 20 minutes after an insertion it never got a confirmation for. */
+    @Test fun `needleCheck confirms an inserted needle to the patch`() {
+        stubRunSingle(SimpleResultResponse(resultCode = 0))
+        whenever(needleCheckUseCase.persistNeedleResult(any())).thenReturn(true)
+
+        sut.execute(CmdNeedleCheck())
+
+        assertThat(sentCommands(2)).containsExactly(listOf<Byte>(0x1A, 0x00), listOf<Byte>(0x19, 0x00)).inOrder()
+    }
+
+    @Test fun `needleCheck does not confirm a needle that is not inserted`() {
+        stubRunSingle(SimpleResultResponse(resultCode = 2))
+        whenever(needleCheckUseCase.persistNeedleResult(any())).thenReturn(true)
+
+        sut.execute(CmdNeedleCheck())
+
+        assertThat(sentCommands(1)).containsExactly(listOf<Byte>(0x1A, 0x00))
+    }
+
+    /** The cannula is in. A lost confirmation only brings the alarm, from which the user finishes the activation. */
+    @Test fun `needleCheck succeeds when the confirmation gets no answer`() {
+        whenever { bleSession.runSingle<BleResponse>(any(), any(), any()) }
+            .thenReturn(SimpleResultResponse(resultCode = 0))
+            .thenAnswer { throw RuntimeException(BOOM) }
+        whenever(needleCheckUseCase.persistNeedleResult(any())).thenReturn(true)
+
+        val result = sut.execute(CmdNeedleCheck())
+
+        assertThat(result?.success).isTrue()
+        verify(needleCheckUseCase).persistNeedleResult(true)
     }
 
     // endregion
@@ -758,6 +934,7 @@ internal class CarelevoActivationExecutorTest {
         private const val ADDRESS = "aa:bb:cc:dd:ee:ff"
         private const val ALARM_ID = "alarm-1"
         private const val BOOM = "boom"
+        private const val NOW = 1_000_000L
     }
 
     /** Minimal [PumpEnactResult] so the provider returns a fresh, real result object per op. */

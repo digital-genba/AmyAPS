@@ -1,23 +1,23 @@
 package app.aaps.implementation.utils.fabric
 
-import android.content.SharedPreferences
 import android.os.Bundle
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.rx.weardata.EventData
+import app.aaps.core.interfaces.sharedPreferences.KeyValueStore
 import app.aaps.core.interfaces.utils.fabric.FabricPrivacy
 import app.aaps.core.keys.BooleanKey
 import com.google.firebase.Firebase
 import com.google.firebase.analytics.FirebaseAnalytics
 import com.google.firebase.analytics.analytics
 import com.google.firebase.crashlytics.FirebaseCrashlytics
+import dev.zacsweers.metro.AppScope
+import dev.zacsweers.metro.ContributesBinding
+import dev.zacsweers.metro.Inject
+import dev.zacsweers.metro.SingleIn
 import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.io.ObjectInputStream
-import dev.zacsweers.metro.Inject
-import dev.zacsweers.metro.AppScope
-import dev.zacsweers.metro.ContributesBinding
-import dev.zacsweers.metro.SingleIn
 
 /**
  * Some users do not wish to be tracked, Fabric Answers and Crashlytics do not provide an easy way
@@ -29,7 +29,7 @@ import dev.zacsweers.metro.SingleIn
 @Inject
 class FabricPrivacyImpl(
     private val aapsLogger: AAPSLogger,
-    private val sharedPreferences: SharedPreferences // Injecting Preferences is causing circular dependencies
+    private val store: KeyValueStore // Injecting Preferences is causing circular dependencies
 ) : FabricPrivacy {
 
     // Resolved on first use. `Firebase.analytics` needs an initialized FirebaseApp, and this class is
@@ -118,7 +118,7 @@ class FabricPrivacyImpl(
     }
 
     override fun fabricEnabled(): Boolean {
-        return sharedPreferences.getBoolean(BooleanKey.MaintenanceEnableFabric.key, true)
+        return store.getBoolean(BooleanKey.MaintenanceEnableFabric.key, BooleanKey.MaintenanceEnableFabric.defaultValue)
     }
 
     override fun logWearException(wearException: EventData.WearException) {

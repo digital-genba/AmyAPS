@@ -1,5 +1,6 @@
 package app.aaps.implementation.maintenance
 
+import app.aaps.core.data.time.SystemTimeZone
 import app.aaps.core.data.time.T
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.db.PersistenceLayer
@@ -11,8 +12,8 @@ import app.aaps.core.interfaces.maintenance.ExportResult
 import app.aaps.core.interfaces.maintenance.ImportDecryptResult
 import app.aaps.core.interfaces.maintenance.ImportExportPrefs
 import app.aaps.core.interfaces.maintenance.PrefMetadata
-import app.aaps.core.interfaces.maintenance.Prefs
 import app.aaps.core.interfaces.maintenance.PrefMetadataMap
+import app.aaps.core.interfaces.maintenance.Prefs
 import app.aaps.core.interfaces.maintenance.PrefsFile
 import app.aaps.core.interfaces.maintenance.PrefsMetadataKey
 import app.aaps.core.interfaces.plugin.ActivePlugin
@@ -25,20 +26,20 @@ import app.aaps.core.interfaces.sharedPreferences.KeyValueStore
 import app.aaps.core.interfaces.userEntry.UserEntryPresentationHelper
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.MidnightTime
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.launch
 import app.aaps.core.keys.BooleanNonKey
-import app.aaps.implementation.maintenance.cloud.CloudConstants
-import app.aaps.implementation.maintenance.cloud.CloudStorageManager
 import app.aaps.core.keys.StringKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.objects.crypto.platformCryptoPrimitives
+import app.aaps.implementation.maintenance.cloud.CloudConstants
+import app.aaps.implementation.maintenance.cloud.CloudStorageManager
 import app.aaps.implementation.maintenance.formats.ExportMetadata
 import app.aaps.implementation.maintenance.formats.PrefsFormatCodec
 import app.aaps.implementation.maintenance.formats.PrefsTransfer
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.SingleIn
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 
 /**
  * Exporting and importing AAPS settings, for every platform that keeps its exports in a folder.
@@ -243,7 +244,7 @@ class LocalImportExportPrefs(
      * treatment log, and its value is being readable in a spreadsheet.
      */
     override suspend fun executeCsvExport(): ExportResult {
-        val since = MidnightTime.calc() - T.days(CSV_DAYS).msecs()
+        val since = MidnightTime.last(SystemTimeZone.current()) - T.days(CSV_DAYS).msecs()
         val entries = persistenceLayer.getUserEntryFilteredDataFromTime(since)
         val name = files.newCsvName()
         return try {

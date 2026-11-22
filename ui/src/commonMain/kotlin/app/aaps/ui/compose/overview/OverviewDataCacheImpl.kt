@@ -4,6 +4,7 @@ import app.aaps.core.data.configuration.Constants
 import app.aaps.core.data.iob.InMemoryGlucoseValue
 import app.aaps.core.data.model.BS
 import app.aaps.core.data.model.CA
+import app.aaps.core.data.model.CAL
 import app.aaps.core.data.model.EB
 import app.aaps.core.data.model.EPS
 import app.aaps.core.data.model.GV
@@ -14,11 +15,11 @@ import app.aaps.core.data.model.SC
 import app.aaps.core.data.model.TB
 import app.aaps.core.data.model.TE
 import app.aaps.core.data.model.TT
-import app.aaps.core.data.model.latestRunningAt
+import app.aaps.core.data.model.endOf
 import app.aaps.core.data.time.T
-import app.aaps.core.interfaces.concurrent.aapsIoDispatcher
 import app.aaps.core.interfaces.InterfacesStrings
 import app.aaps.core.interfaces.aps.Loop
+import app.aaps.core.interfaces.concurrent.aapsIoDispatcher
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.db.ProcessedTbrEbData
@@ -40,6 +41,7 @@ import app.aaps.core.interfaces.overview.graph.BgRange
 import app.aaps.core.interfaces.overview.graph.BgiGraphData
 import app.aaps.core.interfaces.overview.graph.BolusGraphPoint
 import app.aaps.core.interfaces.overview.graph.BolusType
+import app.aaps.core.interfaces.overview.graph.CalibrationGraphPoint
 import app.aaps.core.interfaces.overview.graph.CarbsGraphPoint
 import app.aaps.core.interfaces.overview.graph.CobGraphData
 import app.aaps.core.interfaces.overview.graph.DevSlopeGraphData
@@ -59,6 +61,8 @@ import app.aaps.core.interfaces.overview.graph.RunningModeSegment
 import app.aaps.core.interfaces.overview.graph.SeriesType
 import app.aaps.core.interfaces.overview.graph.StepsGraphData
 import app.aaps.core.interfaces.overview.graph.TargetLineData
+import app.aaps.core.interfaces.overview.graph.buildTargetLine
+import app.aaps.core.interfaces.overview.graph.targetMiddleMgdl
 import app.aaps.core.interfaces.overview.graph.TbrDisplayData
 import app.aaps.core.interfaces.overview.graph.TbrState
 import app.aaps.core.interfaces.overview.graph.TempTargetDisplayData
@@ -77,11 +81,13 @@ import app.aaps.core.interfaces.rx.events.EventBucketedDataCreated
 import app.aaps.core.interfaces.rx.events.EventLoopUpdateGui
 import app.aaps.core.interfaces.rx.events.EventNewOpenLoopNotification
 import app.aaps.core.interfaces.rx.events.EventNsClientStatusUpdated
+import app.aaps.core.interfaces.ui.UiRestart
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.DecimalFormatter
 import app.aaps.core.interfaces.utils.Round
 import app.aaps.core.interfaces.utils.Translator
 import app.aaps.core.interfaces.utils.TrendCalculator
+import app.aaps.core.interfaces.utils.fabric.FabricPrivacy
 import app.aaps.core.interfaces.workflow.CalculationSignals
 import app.aaps.core.keys.IntKey
 import app.aaps.core.keys.StringKey
@@ -90,14 +96,11 @@ import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.objects.extensions.apsAdjustedTargetMgdl
 import app.aaps.core.objects.extensions.convertedToAbsolute
 import app.aaps.core.objects.extensions.fromGv
-import app.aaps.core.objects.extensions.target
 import app.aaps.core.objects.profile.ProfileSealed
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.ui.UiStrings
 import dev.zacsweers.metro.Assisted
 import dev.zacsweers.metro.AssistedInject
-import kotlin.math.abs
-import kotlin.math.max
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
@@ -117,6 +120,8 @@ import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.math.abs
+import kotlin.math.max
 
 /**
  * Implementation of OverviewDataCache using MutableStateFlow.
@@ -144,6 +149,24 @@ private const val URGENT_BATTERY_PERCENT = 20.0
 private const val WARN_BATTERY_VOLTAGE = 1.35
 private const val URGENT_BATTERY_VOLTAGE = 1.3
 
+/**
+ * What a tap on a therapy event in the graph shows.
+ *
+ * A BG check is only an icon in the treatment belt, so its position does not show the value the way
+ * the old BG graph did. The value goes in the label, before the note, so a long note that is cut at
+ * the end of the one-line label cannot hide it.
+ */
+internal fun therapyEventLabel(te: TE, typeName: String, profileUtil: ProfileUtil, rh: TextResolver): String {
+    val note = te.note?.takeIf { it.isNotBlank() }
+    val bg = te.glucose?.let { profileUtil.fromMgdlToStringWithUnits(profileUtil.convertToMgdl(it, te.glucoseUnit)) }
+    return when {
+        bg != null && note != null -> rh.gs(UiStrings.graph_therapy_event_bg_with_note, bg, note)
+        bg != null                 -> bg
+        note != null               -> note
+        else                       -> typeName
+    }
+}
+
 @OptIn(FlowPreview::class)
 @AssistedInject
 class OverviewDataCacheImpl(
@@ -166,6 +189,8 @@ class OverviewDataCacheImpl(
     private val decimalFormatter: DecimalFormatter,
     private val translator: Translator,
     private val rh: TextResolver,
+    private val uiRestart: UiRestart,
+    fabricPrivacy: FabricPrivacy,
     @Assisted val signals: CalculationSignals,
     @Assisted val observeDatabase: Boolean
 ) : OverviewDataCache {
@@ -173,6 +198,13 @@ class OverviewDataCacheImpl(
     // Lazy lookup breaks the cache ↔ iobCobCalculator construction cycle.
     // Only used on DB-observation paths (observeDatabase == true).
     private val iobCobCalculator: IobCobCalculator get() = iobCobCalculatorProvider()
+
+    // Every graph value goes through this before it is stored in a flow, see NonFiniteGraphValues
+    private val nonFinite = NonFiniteGraphValues(fabricPrivacy)
+
+    private fun List<GraphDataPoint>.finite(series: String): List<GraphDataPoint> = nonFinite.drop(series, this, { it.timestamp }, { it.value })
+
+    private fun List<BgDataPoint>.finiteBg(series: String): List<BgDataPoint> = nonFinite.drop(series, this, { it.timestamp }, { it.value })
 
     private val scope = CoroutineScope(SupervisorJob() + aapsIoDispatcher)
 
@@ -251,7 +283,7 @@ class OverviewDataCacheImpl(
     override val heartRateGraphFlow: StateFlow<HeartRateGraphData> = _heartRateGraphFlow.asStateFlow()
     private val _stepsGraphFlow = MutableStateFlow(StepsGraphData(emptyList()))
     override val stepsGraphFlow: StateFlow<StepsGraphData> = _stepsGraphFlow.asStateFlow()
-    private val _treatmentGraphFlow = MutableStateFlow(TreatmentGraphData(emptyList(), emptyList(), emptyList(), emptyList()))
+    private val _treatmentGraphFlow = MutableStateFlow(TreatmentGraphData(emptyList(), emptyList(), emptyList(), emptyList(), emptyList()))
     override val treatmentGraphFlow: StateFlow<TreatmentGraphData> = _treatmentGraphFlow.asStateFlow()
     private val _epsGraphFlow = MutableStateFlow<List<EpsGraphPoint>>(emptyList())
     override val epsGraphFlow: StateFlow<List<EpsGraphPoint>> = _epsGraphFlow.asStateFlow()
@@ -302,10 +334,9 @@ class OverviewDataCacheImpl(
         }
 
         // Scope-agnostic: new predictions move the right edge of the axis, and the series that are
-        // drawn to that edge have to follow. `timeRangeFlow` alone is not enough - it only carries
-        // the horizon as `TimeRange.endTime`, which is clamped to two hours, and a `StateFlow` drops
-        // a value equal to the last one. So a prediction run that leaves `endTime` where it was
-        // emits nothing here, and the basal would keep the previous horizon while the axis has
+        // drawn to that edge have to follow. `timeRangeFlow` alone is not enough: a `StateFlow`
+        // drops a value equal to the last one, so a prediction run that leaves `endTime` where it
+        // was emits nothing here, and the basal would keep the previous horizon while the axis has
         // already taken the new one.
         scope.launch {
             predictionsFlow
@@ -400,7 +431,7 @@ class OverviewDataCacheImpl(
 
             // Observe treatment-related DB changes
             for (type in listOf(
-                BS::class, CA::class, EB::class, TE::class
+                BS::class, CA::class, EB::class, TE::class, CAL::class
             )) {
                 scope.launch {
                     persistenceLayer.observeChanges(type)
@@ -516,6 +547,24 @@ class OverviewDataCacheImpl(
                     updateTempTargetFromDatabase()
                     updateRunningModeFromDatabase()
                     updateTbrFromDatabase()
+                }
+            }
+
+            // A language change or an import rebuilds the screens, but the texts held here were built in
+            // the old language or from the old settings, and nothing in the database changed to say so.
+            // Without this the BG circle still said "stabilní" to a screen reader after a switch to
+            // Romanian. Read everything that holds text again, like after a wipe but without the reset.
+            scope.launch {
+                uiRestart.signal.drop(1).collect {
+                    aapsLogger.debug(LTag.UI, "OverviewDataCache: UI restart, reloading texts")
+                    updateBgInfoFromDatabase()
+                    updateProfileFromDatabase()
+                    updateTempTargetFromDatabase()
+                    updateRunningModeFromDatabase()
+                    updateTbrFromDatabase()
+                    rebuildTreatmentGraph()
+                    rebuildEpsGraph()
+                    if (config.AAPSCLIENT) rebuildNsClientStatus()
                 }
             }
 
@@ -693,10 +742,14 @@ class OverviewDataCacheImpl(
         // which touches activePump and crashes at startup before the pump plugin is selected.
         // Loop will correct mode itself when it next runs; the RM observer will pick it up.
         val now = dateUtil.now()
-        // Null when nothing is stored for this moment. Left null rather than filled in with
-        // RM.DEFAULT_MODE, which the UI would draw as a definite "loop disabled" - see
-        // PersistenceLayer.getRunningModeActiveAtOrNull.
-        val rmRecord = persistenceLayer.getRunningModeActiveAtOrNull(now)
+        // On a client, null when nothing is stored for this moment: a follower that has never synced a
+        // permanent record does not know the master's mode, and RM.DEFAULT_MODE would be drawn as a
+        // definite "loop disabled" - see PersistenceLayer.getRunningModeActiveAtOrNull.
+        // On the master the default is not a guess. With nothing stored the loop really runs in
+        // RM.DEFAULT_MODE (Loop.runningMode() reads getRunningModeActiveAt), so show that mode.
+        val rmRecord =
+            if (config.AAPSCLIENT) persistenceLayer.getRunningModeActiveAtOrNull(now)
+            else persistenceLayer.getRunningModeActiveAt(now)
 
         // Store raw data only - ViewModel computes display text
         _runningModeFlow.value = rmRecord?.let {
@@ -747,15 +800,15 @@ class OverviewDataCacheImpl(
     }
 
     override fun updateBgReadings(data: List<BgDataPoint>) {
-        _bgReadingsFlow.value = data
+        _bgReadingsFlow.value = data.finiteBg("BG readings")
     }
 
     override fun updateBucketedData(data: List<BgDataPoint>) {
-        _bucketedDataFlow.value = data
+        _bucketedDataFlow.value = data.finiteBg("bucketed BG")
     }
 
     override fun updatePredictions(data: List<BgDataPoint>) {
-        _predictionsFlow.value = data
+        _predictionsFlow.value = data.finiteBg("BG predictions")
     }
 
     override fun updateBgInfo(data: BgInfoData?) {
@@ -763,47 +816,50 @@ class OverviewDataCacheImpl(
     }
 
     override fun updateIobGraph(data: IobGraphData) {
-        _iobGraphFlow.value = data
+        _iobGraphFlow.value = IobGraphData(iob = data.iob.finite("IOB"), predictions = data.predictions.finite("IOB predictions"))
     }
 
     override fun updateAbsIobGraph(data: AbsIobGraphData) {
-        _absIobGraphFlow.value = data
+        _absIobGraphFlow.value = AbsIobGraphData(absIob = data.absIob.finite("absolute IOB"))
     }
 
     override fun updateCobGraph(data: CobGraphData) {
-        _cobGraphFlow.value = data
+        _cobGraphFlow.value = CobGraphData(
+            cob = data.cob.finite("COB"),
+            failOverPoints = nonFinite.drop("COB failover", data.failOverPoints, { it.timestamp }, { it.cobValue })
+        )
     }
 
     override fun updateActivityGraph(data: ActivityGraphData) {
-        _activityGraphFlow.value = data
+        _activityGraphFlow.value = ActivityGraphData(activity = data.activity.finite("activity"), activityPrediction = data.activityPrediction.finite("activity prediction"))
     }
 
     override fun updateBgiGraph(data: BgiGraphData) {
-        _bgiGraphFlow.value = data
+        _bgiGraphFlow.value = BgiGraphData(bgi = data.bgi.finite("BGI"), bgiPrediction = data.bgiPrediction.finite("BGI prediction"))
     }
 
     override fun updateDeviationsGraph(data: DeviationsGraphData) {
-        _deviationsGraphFlow.value = data
+        _deviationsGraphFlow.value = DeviationsGraphData(deviations = nonFinite.drop("deviations", data.deviations, { it.timestamp }, { it.value }))
     }
 
     override fun updateRatioGraph(data: RatioGraphData) {
-        _ratioGraphFlow.value = data
+        _ratioGraphFlow.value = RatioGraphData(ratio = data.ratio.finite("sensitivity ratio"))
     }
 
     override fun updateDevSlopeGraph(data: DevSlopeGraphData) {
-        _devSlopeGraphFlow.value = data
+        _devSlopeGraphFlow.value = DevSlopeGraphData(dsMax = data.dsMax.finite("deviation slope max"), dsMin = data.dsMin.finite("deviation slope min"))
     }
 
     override fun updateVarSensGraph(data: VarSensGraphData) {
-        _varSensGraphFlow.value = data
+        _varSensGraphFlow.value = VarSensGraphData(varSens = data.varSens.finite("variable sensitivity"))
     }
 
     override fun updateHeartRateGraph(data: HeartRateGraphData) {
-        _heartRateGraphFlow.value = data
+        _heartRateGraphFlow.value = HeartRateGraphData(segments = data.segments.map { it.finite("heart rate") }.filter { it.isNotEmpty() })
     }
 
     override fun updateStepsGraph(data: StepsGraphData) {
-        _stepsGraphFlow.value = data
+        _stepsGraphFlow.value = StepsGraphData(steps = data.steps.finite("steps"))
     }
 
     // =========================================================================
@@ -861,7 +917,7 @@ class OverviewDataCacheImpl(
                     amount = bs.amount,
                     bolusType = if (bs.type == BS.Type.SMB) BolusType.SMB else BolusType.NORMAL,
                     isValid = bs.isValid,
-                    label = decimalFormatter.toPumpSupportedBolus(bs.amount, bolusStep)
+                    label = decimalFormatter.toPumpSupportedBolusWithUnits(bs.amount, bolusStep)
                 )
             }
 
@@ -893,7 +949,7 @@ class OverviewDataCacheImpl(
 
         // Therapy events
         val therapyEventPoints = persistenceLayer.getTherapyEventDataFromToTime(fromTime - T.hours(6).msecs(), toTime)
-            .filter { te -> te.timestamp + te.duration >= fromTime && te.timestamp <= toTime }
+            .filter { te -> endOf(te.timestamp, te.duration) >= fromTime && te.timestamp <= toTime }
             .map { te ->
                 val teType = when {
                     te.type == TE.Type.NS_MBG                -> TherapyEventType.MBG
@@ -904,20 +960,34 @@ class OverviewDataCacheImpl(
                     te.duration > 0                          -> TherapyEventType.GENERAL_WITH_DURATION
                     else                                     -> TherapyEventType.GENERAL
                 }
-                val teLabel = if (!te.note.isNullOrBlank()) te.note!! else translator.translate(te.type)
                 TherapyEventGraphPoint(
                     timestamp = te.timestamp,
                     eventType = teType,
-                    label = teLabel,
-                    duration = te.duration
+                    label = therapyEventLabel(te, translator.translate(te.type), profileUtil, rh),
+                    duration = te.duration,
+                    glucoseUserUnits = te.glucose?.let { profileUtil.fromMgdlToUnits(profileUtil.convertToMgdl(it, te.glucoseUnit)) }
                 )
             }
 
+        // Calibration pairs — only the finger value is drawn, at its own glucose value
+        val calibrationPoints = persistenceLayer.getValidCalibrationEntriesSince(fromTime)
+            .filter { it.timestamp <= toTime }
+            .map { cal ->
+                CalibrationGraphPoint(
+                    timestamp = cal.timestamp,
+                    fingerstickUserUnits = profileUtil.fromMgdlToUnits(cal.fingerstickMgdl),
+                    isValid = cal.isValid,
+                    label = profileUtil.fromMgdlToStringWithUnits(cal.fingerstickMgdl)
+                )
+            }
+
+        // Extended boluses are drawn at their amount, the rate is only in the label
         _treatmentGraphFlow.value = TreatmentGraphData(
-            boluses = bolusPoints,
-            carbs = carbsPoints,
-            extendedBoluses = extendedBolusPoints,
-            therapyEvents = therapyEventPoints
+            boluses = nonFinite.drop("boluses", bolusPoints, { it.timestamp }, { it.amount }),
+            carbs = nonFinite.drop("carbs", carbsPoints, { it.timestamp }, { it.amount }),
+            extendedBoluses = nonFinite.drop("extended boluses", extendedBolusPoints, { it.timestamp }, { it.amount }),
+            therapyEvents = nonFinite.drop("therapy event glucose", therapyEventPoints, { it.timestamp }, { it.glucoseUserUnits }),
+            calibrations = nonFinite.drop("calibrations", calibrationPoints, { it.timestamp }, { it.fingerstickUserUnits })
         )
     }
 
@@ -925,10 +995,14 @@ class OverviewDataCacheImpl(
         val (fromTime, toTime) = graphTimeRange() ?: return
         _epsGraphFlow.value = persistenceLayer.getEffectiveProfileSwitchesFromTimeToTime(fromTime, toTime, true)
             .map { eps ->
-                val label = buildString {
-                    if (eps.originalPercentage != 100) append("${eps.originalPercentage}%")
-                    if (eps.originalPercentage != 100 && eps.originalTimeshift != 0L) append(",")
-                    if (eps.originalTimeshift != 0L) append("${T.msecs(eps.originalTimeshift).hours()}${rh.gs(InterfacesStrings.shorthour)}")
+                val hours = T.msecs(eps.originalTimeshift).hours()
+                val label = when {
+                    eps.originalPercentage != 100 && eps.originalTimeshift != 0L ->
+                        rh.gs(InterfacesStrings.values_with_comma, rh.gs(CoreUiStrings.units_format_percent, eps.originalPercentage), rh.gs(UiStrings.agp_hours, hours))
+
+                    eps.originalPercentage != 100                                -> rh.gs(CoreUiStrings.units_format_percent, eps.originalPercentage)
+                    eps.originalTimeshift != 0L                                  -> rh.gs(UiStrings.agp_hours, hours)
+                    else                                                         -> ""
                 }
                 EpsGraphPoint(
                     timestamp = eps.timestamp,
@@ -983,26 +1057,10 @@ class OverviewDataCacheImpl(
         val temporaryTargets = (persistenceLayer.getTemporaryTargetsActiveAt(fromTime) +
             persistenceLayer.getTemporaryTargetDataFromTime(fromTime, true)).distinctBy { it.id }
 
-        val targets = mutableListOf<GraphDataPoint>()
-        var lastTarget = -1.0
-        var time = fromTime
-        while (time < endTime) {
-            val tt = temporaryTargets.latestRunningAt(time) { it.duration }
-            val value = if (tt != null) {
-                profileUtil.fromMgdlToUnits(tt.target())
-            } else {
-                profileUtil.fromMgdlToUnits((profile.getTargetLowMgdl(time) + profile.getTargetHighMgdl(time)) / 2)
-            }
-            if (value != lastTarget) {
-                targets.add(GraphDataPoint(time, value))
-                lastTarget = value
-            }
-            time += 5 * 60 * 1000L
-        }
-        // Final point
-        if (lastTarget >= 0.0) targets.add(GraphDataPoint(endTime, lastTarget))
+        // The same step line the watch gets (DataHandlerMobile.sendTreatments)
+        val targets = buildTargetLine(fromTime, endTime, temporaryTargets, profile::targetMiddleMgdl) { profileUtil.fromMgdlToUnits(it) }
 
-        _targetLineFlow.value = TargetLineData(targets)
+        _targetLineFlow.value = TargetLineData(targets.finite("target line"))
     }
 
     /**
@@ -1080,7 +1138,12 @@ class OverviewDataCacheImpl(
         if (lastProfileBasal >= 0.0) profileBasal.add(GraphDataPoint(endTime, lastProfileBasal))
         if (lastActualBasal >= 0.0) actualBasal.add(GraphDataPoint(endTime, lastActualBasal))
 
-        _basalGraphFlow.value = BasalGraphData(profileBasal, actualBasal, maxBasal)
+        val finiteProfileBasal = profileBasal.finite("profile basal")
+        val finiteActualBasal = actualBasal.finite("actual basal")
+        // max() passes a NaN on, so a single bad rate would have made maxBasal NaN as well. Every rate
+        // is in one of the two lists (a point is added at each change), so this is the same maximum.
+        val finiteMaxBasal = if (maxBasal.isFinite()) maxBasal else (finiteProfileBasal + finiteActualBasal).maxOfOrNull { it.value }?.coerceAtLeast(0.0) ?: 0.0
+        _basalGraphFlow.value = BasalGraphData(finiteProfileBasal, finiteActualBasal, finiteMaxBasal)
 
         // Everything needed to see a short line for what it is, without a second run. The last
         // point of each series is the end the user actually sees, so comparing it against `now`
@@ -1107,21 +1170,23 @@ class OverviewDataCacheImpl(
         val pumpItem = processedDeviceStatusData.pumpData?.let { pumpData ->
             val level = when {
                 pumpData.clock + URGENT_CLOCK_MINUTES * 60 * 1000L < now                          -> AapsClientLevel.URGENT
-                pumpData.reservoir < URGENT_RESERVOIR                                             -> AapsClientLevel.URGENT
+                pumpData.reservoir.let { it != null && it < URGENT_RESERVOIR }                  -> AapsClientLevel.URGENT
                 pumpData.isPercent && pumpData.percent < URGENT_BATTERY_PERCENT                   -> AapsClientLevel.URGENT
                 !pumpData.isPercent && pumpData.voltage > 0 && pumpData.voltage < URGENT_BATTERY_VOLTAGE -> AapsClientLevel.URGENT
                 pumpData.clock + WARN_CLOCK_MINUTES * 60 * 1000L < now                            -> AapsClientLevel.WARN
-                pumpData.reservoir < WARN_RESERVOIR                                               -> AapsClientLevel.WARN
+                pumpData.reservoir.let { it != null && it < WARN_RESERVOIR }                    -> AapsClientLevel.WARN
                 pumpData.isPercent && pumpData.percent < WARN_BATTERY_PERCENT                     -> AapsClientLevel.WARN
                 !pumpData.isPercent && pumpData.voltage > 0 && pumpData.voltage < WARN_BATTERY_VOLTAGE -> AapsClientLevel.WARN
                 else                                                                              -> AapsClientLevel.INFO
             }
             // Format: "75% 3 min ago" (running mode excluded — already shown in RunningMode chip)
-            val value = buildString {
-                if (pumpData.isPercent) append("${pumpData.percent}% ")
-                if (!pumpData.isPercent && pumpData.voltage > 0) append("${Round.roundTo(pumpData.voltage, 0.001)} ")
-                append(dateUtil.minAgo(rh, pumpData.clock))
-            }.trim()
+            val battery = when {
+                pumpData.isPercent      -> rh.gs(CoreUiStrings.units_format_percent, pumpData.percent)
+                pumpData.voltage > 0    -> Round.roundTo(pumpData.voltage, 0.001).toString()
+                else                    -> null
+            }
+            val age = dateUtil.minAgo(rh, pumpData.clock)
+            val value = battery?.let { rh.gs(CoreUiStrings.value_with_unit, it, age) } ?: age
             val dialogText = buildString {
                 pumpData.extended?.let {
                     append(it.trim())
@@ -1147,17 +1212,13 @@ class OverviewDataCacheImpl(
             val clockEnacted = processedDeviceStatusData.openAPSData.clockEnacted
             val enacted = processedDeviceStatusData.openAPSData.enacted
             val sameCycle = enacted != null && clockSuggested - clockEnacted <= 60_000L
-            val dialogText = buildString {
-                if (sameCycle) {
-                    append("Enacted: ${dateUtil.minAgo(rh, clockEnacted)}")
-                    append(" ${enacted.reason}")
-                } else {
-                    processedDeviceStatusData.openAPSData.suggested?.let {
-                        append("Suggested: ${dateUtil.minAgo(rh, clockSuggested)}")
-                        append(" ${it.reason}")
-                    }
-                }
-            }
+            // "Suggested" has no translated string yet, so it stays the English word it always was.
+            val dialogText =
+                if (sameCycle)
+                    rh.gs(InterfacesStrings.confirmation_line, rh.gs(CoreUiStrings.enacted), rh.gs(CoreUiStrings.value_with_unit, dateUtil.minAgo(rh, clockEnacted), enacted.reason))
+                else processedDeviceStatusData.openAPSData.suggested?.let {
+                    rh.gs(InterfacesStrings.confirmation_line, "Suggested", rh.gs(CoreUiStrings.value_with_unit, dateUtil.minAgo(rh, clockSuggested), it.reason))
+                } ?: ""
             AapsClientStatusItem(
                 label = rh.gs(CoreUiStrings.openaps_short),
                 value = value,
@@ -1167,27 +1228,24 @@ class OverviewDataCacheImpl(
             )
         } else null
 
-        val uploaderItem = if (processedDeviceStatusData.uploaderMap.isNotEmpty()) {
+        // Only the phones that still report: a phone switched off kept its last battery level (#5547)
+        val uploaders = processedDeviceStatusData.activeUploaders
+        val uploaderItem = if (uploaders.isNotEmpty()) {
             var minBattery = 100
             var isCharging = false
-            for ((_, uploader) in processedDeviceStatusData.uploaderMap) {
+            for ((_, uploader) in uploaders) {
                 if (uploader.battery <= minBattery) {
                     minBattery = uploader.battery
                     isCharging = uploader.isCharging == true
                 }
             }
             // Match original format: "ᴪ 93%" or "93%"
-            val value = buildString {
-                if (isCharging) append("\u26A1")
-                append("$minBattery%")
+            val minBatteryText = rh.gs(CoreUiStrings.units_format_percent, minBattery)
+            val value = if (isCharging) rh.gs(CoreUiStrings.value_with_unit, "⚡", minBatteryText) else minBatteryText
+            val dialogText = uploaders.entries.joinToString("\n") { (device, uploader) ->
+                val line = rh.gs(InterfacesStrings.confirmation_line, device, rh.gs(CoreUiStrings.units_format_percent, uploader.battery))
+                if (uploader.isCharging == true) rh.gs(CoreUiStrings.value_with_unit, line, "⚡") else line
             }
-            val dialogText = buildString {
-                for ((device, uploader) in processedDeviceStatusData.uploaderMap) {
-                    append("$device: ${uploader.battery}%")
-                    if (uploader.isCharging == true) append(" \u26A1")
-                    append("\n")
-                }
-            }.trimEnd()
             AapsClientStatusItem(
                 label = rh.gs(CoreUiStrings.uploader_short),
                 value = value,
@@ -1202,19 +1260,19 @@ class OverviewDataCacheImpl(
 
     private suspend fun rebuildHeartRateGraph() {
         val (fromTime, toTime) = graphTimeRange() ?: return
-        val heartRates = persistenceLayer.getHeartRatesFromTimeToTime(fromTime, toTime)
-            .filter { it.isValid }
-            // Plot at sampling start: HR.timestamp is the end of the sampling period (matches legacy HeartRateDataPoint.getX())
-            .map { hr -> GraphDataPoint(timestamp = hr.timestamp - hr.duration, value = hr.beatsPerMinute) }
-        _heartRateGraphFlow.value = HeartRateGraphData(heartRates)
+        val heartRates = persistenceLayer.getHeartRatesFromTimeToTime(fromTime, toTime).filter { it.isValid }
+        updateHeartRateGraph(HeartRateGraphData(heartRateSegments(heartRates)))
     }
 
     private suspend fun rebuildStepsGraph() {
         val (fromTime, toTime) = graphTimeRange() ?: return
         val steps = persistenceLayer.getStepsCountFromTimeToTime(fromTime, toTime)
             .filter { it.isValid }
-            .map { sc -> GraphDataPoint(timestamp = sc.timestamp, value = sc.steps5min.toDouble()) }
-        _stepsGraphFlow.value = StepsGraphData(steps)
+            // The watch stores each sample once per duration (5 to 180 min), all with the same steps5min
+            .distinctBy { it.timestamp }
+            // Plot at the start of the 5 minutes steps5min counts: SC.timestamp is their end
+            .map { sc -> GraphDataPoint(timestamp = sc.timestamp - T.mins(5).msecs(), value = sc.steps5min.toDouble()) }
+        updateStepsGraph(StepsGraphData(steps))
     }
 
     override fun reset() {
@@ -1225,9 +1283,9 @@ class OverviewDataCacheImpl(
         _bgInfoFlow.value = null
         _tempTargetFlow.value = null
         _profileFlow.value = null
-        // _runningModeFlow intentionally not nulled: getRunningModeActiveAt() always returns
-        // a non-null value (DEFAULT_MODE fallback for empty table), so callers should use
-        // updateRunningModeFromDatabase() to refresh it rather than forcing a null state.
+        // _runningModeFlow intentionally not nulled here: updateRunningModeFromDatabase() decides it.
+        // On the master it is never null (DEFAULT_MODE fallback for an empty table); on a client null
+        // means "not known", and only the database read may say that.
         _tbrFlow.value = null
         // Secondary graph flows
         _iobGraphFlow.value = IobGraphData(emptyList(), emptyList())
@@ -1241,7 +1299,7 @@ class OverviewDataCacheImpl(
         _varSensGraphFlow.value = VarSensGraphData(emptyList())
         _heartRateGraphFlow.value = HeartRateGraphData(emptyList())
         _stepsGraphFlow.value = StepsGraphData(emptyList())
-        _treatmentGraphFlow.value = TreatmentGraphData(emptyList(), emptyList(), emptyList(), emptyList())
+        _treatmentGraphFlow.value = TreatmentGraphData(emptyList(), emptyList(), emptyList(), emptyList(), emptyList())
         _epsGraphFlow.value = emptyList()
         _basalGraphFlow.value = BasalGraphData(emptyList(), emptyList(), 0.0)
         _targetLineFlow.value = TargetLineData(emptyList())
@@ -1253,6 +1311,41 @@ class OverviewDataCacheImpl(
 
 /** Rounds [time] up to the next full minute, as `AutosensDataStore.roundUpTime` does for the IOB caches. */
 internal fun roundUpToMinute(time: Long): Long = if (time % 60_000L == 0L) time else (time / 60_000L + 1) * 60_000L
+
+/** The longest time without heart rate readings that the line is still drawn across. */
+internal val HEART_RATE_MAX_GAP = T.mins(5).msecs()
+
+/**
+ * The heart rate [readings] as stretches of a line. Each reading is plotted at its start, because
+ * `HR.timestamp` is the end of the time it was measured over (as the legacy `HeartRateDataPoint`).
+ * A new stretch starts when a reading starts more than [HEART_RATE_MAX_GAP] after the end of the one
+ * before it: the device was off or not worn, and a line across that time would show values nobody
+ * measured. A shorter hole, such as a minute the AAPS watch app could not measure, does not break it.
+ *
+ * The gap is measured with the duration of each reading, because the sources send at different rates:
+ * the AAPS watch app once a minute, Garmin as often as its watch face asks.
+ *
+ * Each stretch ends with the end of its last reading, at the same value. So the line reaches as far as
+ * the readings go, and a lone reading is drawn too, as a short flat line.
+ */
+internal fun heartRateSegments(readings: List<HR>): List<List<GraphDataPoint>> {
+    val segments = mutableListOf<List<GraphDataPoint>>()
+    var segment = mutableListOf<GraphDataPoint>()
+    var previous: HR? = null
+    for (hr in readings.sortedBy { it.timestamp }) {
+        val start = hr.timestamp - hr.duration
+        previous?.let { last ->
+            if (start > last.timestamp + HEART_RATE_MAX_GAP) {
+                segments += segment + GraphDataPoint(last.timestamp, last.beatsPerMinute)
+                segment = mutableListOf()
+            }
+        }
+        segment += GraphDataPoint(start, hr.beatsPerMinute)
+        previous = hr
+    }
+    previous?.let { last -> segments += segment + GraphDataPoint(last.timestamp, last.beatsPerMinute) }
+    return segments
+}
 
 /**
  * The times inside a graph window where the effective profile can change.
@@ -1278,13 +1371,15 @@ internal fun profileBoundariesIn(switches: List<EPS>, fromTime: Long): List<Long
  *
  * `graphTimeRange` ends at `TimeRange.endTime`, and that is not always the right edge of the chart.
  * The axis is `max(newest BG / bucketed / prediction point, endTime)` (see
- * `GraphViewModel.derivedTimeRange`), and `endTime` is the shorter of the two in two ways:
+ * `GraphViewModel.derivedTimeRange`), and `endTime` can still be the shorter of the two: it is only
+ * as new as the last run of `PostCalculationRunner`, which is the phase that owns it. Until that
+ * phase has run once - a fresh start, or a restore that reset the cache - the range holds `toTime`
+ * alone while a prediction from an earlier loop run already reaches further.
  *
- * - `PostCalculationRunner` clamps the horizon to two hours while the predictions themselves are
- *   not clamped, so the last prediction can sit past `endTime`.
- * - `PrepareGraphDataRunner` collapses `endTime` back to `toTime` on every pass and
- *   `PostCalculationRunner` restores it afterwards, so it stays short for as long as that second
- *   pass does not run - after a failed or skipped loop run, indefinitely.
+ * It used to be short in two more ways, both fixed in `:workflow` rather than worked around here:
+ * the horizon was clamped to two hours while the predictions were not, and `PrepareGraphDataRunner`
+ * collapsed `endTime` back to `toTime` on every pass - which also cut the future IOB and activity
+ * short, because those are built in that pass. See `app.aaps.workflow.keptEndTime`.
  *
  * A series that stops at `endTime` then ends before the axis does. On the basal graph that reads as
  * the line simply stopping short of "now", because basal is the one series a reader expects to be

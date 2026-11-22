@@ -58,7 +58,7 @@ val migratedModules = listOf(
 //
 // Swift callers see every exported name at once, so a Kotlin class can shadow a system type. AAPS
 // has a `Scene`, which hides SwiftUI's, and the app writes `SwiftUI.Scene` to say which it means. A
-// real app would export a smaller, chosen surface instead of all fourteen modules.
+// real app would export a smaller, chosen surface instead of every module.
 val exportMigratedApi = true
 
 // Fails the build when a module gains iOS targets and is not listed above.
@@ -82,10 +82,13 @@ val checkMigratedModules = tasks.register("checkMigratedModules") {
         val withIosTargets = buildFiles
             // Skip comment lines: a doc line that merely mentions the target used to count as
             // declaring it, which is how a KDoc in :appshell once made this fail.
+            // A module builds for iOS when it declares the target itself, or applies
+            // kmp-android-library, which declares it for the module.
             .filter { f ->
                 f.readLines().any { line ->
                     val t = line.trimStart()
-                    !t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*") && t.contains("iosArm64()")
+                    !t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*") &&
+                        (t.contains("iosArm64()") || t.contains("id(\"kmp-android-library\")"))
                 }
             }
             .map { ":" + it.parentFile.relativeTo(rootDir).invariantSeparatorsPath.replace('/', ':') }
@@ -111,34 +114,33 @@ val checkMigratedModules = tasks.register("checkMigratedModules") {
 tasks.matching { it.name.startsWith("linkDebugFramework") }.configureEach { dependsOn(checkMigratedModules) }
 
 /**
- * Which module owns which strings, generated rather than hand written.
+ * The same build stamp `:app` puts in BuildConfig.BUILDVERSION: short commit and date.
  *
- * The list is `StringOwnerModules.ALL`, shared with `:app` and the desktop shell, so the three
- * platforms cannot drift - which they had: the desktop copy carried five of sixteen modules.
+ * Takes the commit from [gitHead] rather than asking git again, so the stamp and
+ * `GeneratedBuildInfo.HEAD` can never disagree about which commit this is. They did: this had its
+ * own copy of the call that ignored the exit code, so a build outside a work tree stamped itself
+ * "-2026.11.03" with no commit at all while HEAD correctly said the commit was unknown.
  */
+fun buildStamp(): String = gitHead() + "-" + SimpleDateFormat("yyyy.MM.dd").format(Date())
 
-/** The same build stamp `:app` puts in BuildConfig.BUILDVERSION: short commit and date. */
-fun buildStamp(): String {
-    val commit = try {
-        val out = File.createTempFile("git-build", "")
-        // `--exclude=ios-testflight-*` for the same reason as in `:app`. It is tempting to keep these
-        // on the iOS side, since the tag was made by this platform's own release - but the tag names
-        // one past submission, not this build. `git describe` reports the nearest one whatever the
-        // distance, so a build 53 commits later still called itself
-        // "ios-testflight-20260906-085036-53-g4dddae0", which reads as that TestFlight build and is not.
-        ProcessBuilder("git", "describe", "--always", "--abbrev=7", "--exclude=ios-testflight-*").redirectOutput(out).start().waitFor()
-        out.readText().trim()
-    } catch (_: Exception) {
-        "NoGitSystemAvailable"
-    }
-    return "$commit-" + SimpleDateFormat("yyyy.MM.dd").format(Date())
-}
+/**
+ * The short commit, the same shape `:app` puts in BuildConfig.HEAD. From buildSrc `Git.kt`, shared
+ * with the other shells, so it excludes the `ios-testflight-*` tags too: such a tag names one past
+ * submission, not this build.
+ */
+fun gitHead(): String = providers.gitDescribe()
+
 /** The version this build reports, from the same constant the Android app uses. */
 val generateIosBuildInfo = tasks.register<GenerateBuildInfoTask>("generateIosBuildInfo") {
     version.set(Versions.appVersion)
     buildStamp.set(buildStamp())
     platform.set("iOS")
     packageName.set("app.aaps.ios.shell.config")
+    // So a crash report names the commit, the repository and whether the tree was clean - the three
+    // things that tell an upstream report from a fork's. Android has sent these since 2019.
+    head.set(gitHead())
+    gitRemote.set(providers.gitRemoteUrl())
+    committed.set(providers.gitAllCommitted())
     outputDir.set(layout.buildDirectory.dir("generated/buildInfo"))
 }
 
@@ -152,10 +154,21 @@ val generateIosBuildInfo = tasks.register<GenerateBuildInfoTask>("generateIosBui
 val generateIosVersionXcconfig = tasks.register<GenerateVersionXcconfigTask>("generateIosVersionXcconfig") {
     version.set(Versions.appVersion)
     buildNumber.set(GenerateVersionXcconfigTask.buildNumberFor(System.currentTimeMillis()))
+    // Read, not written: the task checks that the version typed into the targets as the fallback
+    // still matches this one, because nothing else would notice when they drift apart.
+    projectFile.set(layout.projectDirectory.file("../app/AAPSClient.xcodeproj/project.pbxproj"))
+    // Hard failure on CI, a warning on a developer's machine. Every CI provider sets this.
+    strict.set(providers.environmentVariable("CI").map { it.isNotBlank() }.orElse(false))
     outputFile.set(layout.projectDirectory.file("../app/Version.xcconfig"))
     outputs.upToDateWhen { false } // the build number is the clock; never reuse a previous run
 }
 
+/**
+ * Which module owns which strings, generated rather than hand written.
+ *
+ * The list is `StringOwnerModules.ALL`, shared with `:app` and the desktop shell, so the three
+ * platforms cannot drift - which they had: the desktop copy carried five of sixteen modules.
+ */
 val generateIosStringOwners = tasks.register<GenerateStringOwnerRegistryTask>("generateIosStringOwners") {
     owners.set(StringOwnerModules.ALL)
     packageName.set("app.aaps.ios.shell.di")

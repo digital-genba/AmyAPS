@@ -16,6 +16,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.aaps.core.data.time.T
 import app.aaps.core.ui.compose.AapsCard
 import app.aaps.core.ui.compose.pump.PumpHistoryScreen
 import app.aaps.pump.dana.R
@@ -74,13 +75,14 @@ private fun DanaHistoryItem(
                     ) {
                         Text(text = record.bolusType, style = MaterialTheme.typography.bodySmall)
                         Text(
-                            text = viewModel.formatValue(record) + " U",
+                            text = stringResource(app.aaps.core.ui.R.string.value_with_unit, viewModel.formatValue(record), stringResource(app.aaps.core.ui.R.string.insulin_unit_shortname)),
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium
                         )
                         if (record.duration > 0) {
                             Text(
-                                text = "${record.duration}'",
+                                // Stored in milliseconds. It was shown as is with a minute mark: "3600000'" for 60 min.
+                                text = stringResource(app.aaps.core.ui.R.string.format_mins, T.msecs(record.duration).mins().toInt()),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )

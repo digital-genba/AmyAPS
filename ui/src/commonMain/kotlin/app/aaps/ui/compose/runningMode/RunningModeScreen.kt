@@ -23,11 +23,15 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -36,6 +40,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.aaps.core.data.model.RM
 import app.aaps.core.data.ue.Action
 import app.aaps.core.ui.CoreUiStrings
+import app.aaps.core.ui.compose.AapsCard
 import app.aaps.core.ui.compose.AapsTopAppBar
 import app.aaps.core.ui.compose.stringResource
 import app.aaps.ui.UiStrings
@@ -171,25 +176,29 @@ private fun executeAction(viewModel: RunningModeManagementViewModel, action: Pen
     viewModel.executeAction(action.targetMode, action.action, action.durationMinutes)
 }
 
+/**
+ * The title of the section a [CompactButton] sits in. The same duration buttons ("1h", "2h") are in
+ * both "Suspend loop" and "Disconnect pump", so on their own a screen reader could not tell them
+ * apart; each button says its section.
+ */
+private val LocalSectionTitle = staticCompositionLocalOf<String?> { null }
+
 @Composable
 private fun SectionCard(
     title: String,
     content: @Composable () -> Unit
 ) {
-    ElevatedCard(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
-        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
-    ) {
+    AapsCard(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(
                 text = title,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.semantics { heading() }
             )
             Spacer(modifier = Modifier.height(8.dp))
-            content()
+            CompositionLocalProvider(LocalSectionTitle provides title) { content() }
         }
     }
 }
@@ -379,7 +388,8 @@ private fun CompactButton(
         ) {
             Icon(
                 imageVector = mode.toIcon(),
-                contentDescription = null,
+                // Merged into the button before its text: "Disconnect pump, 1h".
+                contentDescription = LocalSectionTitle.current,
                 modifier = Modifier.size(48.dp),
                 tint = iconColor
             )

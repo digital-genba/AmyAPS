@@ -12,7 +12,7 @@
 - Full-width `Button` with `imePadding()` — stays above keyboard
 - Shows result text when available (e.g., "2.50 U 25 g")
 - Always visible, **disabled** when no result/action available
-- Fallback text: `stringResource(CoreUiR.string.ok)` when disabled
+- Fallback text: `stringResource(CoreUiStrings.ok)` when disabled
 
 ### Card Structure
 - Use **2 cards maximum**: one for calculation/info (if applicable), one for all inputs
@@ -21,28 +21,51 @@
 
 ### Gap-as-Divider Pattern
 - Outer wrapper: `Card(containerColor = surface)` — provides elevation, gap color
-- Inner: `Column(verticalArrangement = Arrangement.spacedBy(2.dp))`
-- Each item: `itemModifier` = `Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)).background(surfaceContainer).padding(horizontal = 16.dp, vertical = 8.dp)`
-- No `HorizontalDivider` — the 2dp gap shows `surface` color through
+- Inner: `Column(verticalArrangement = Arrangement.spacedBy(AapsSpacing.extraSmall))`
+- Each item: `itemModifier` = `Modifier.fillMaxWidth().clip(RoundedCornerShape(AapsSpacing.small)).background(surfaceContainer).padding(horizontal = AapsSpacing.extraLarge, vertical = AapsSpacing.medium)`
+- No `HorizontalDivider` — the `extraSmall` (2dp) gap shows `surface` color through
+- Spacing comes from `AapsSpacing` (`extraSmall` 2dp, `small` 4dp, `medium` 8dp, `large` 12dp,
+  `extraLarge` 16dp), never a written dp value. Some older screens still have the dp values; use the
+  names when you touch them.
 - Define `itemModifier` once and reuse across items
 
-### Collapsible "Change" Pattern
-- For secondary/rarely-changed values (BG, carb time, percentage, profile)
-- **Collapsed**: `Label: Value [Change]` — single compact row
-- **Expanded**: shows NumberInputRow or other editor below the header
-- `[Change]` is a `FilledTonalButton`, only visible when collapsed
-- **No close button** — once expanded, stays expanded (user already decided to edit)
-- **Auto-expand** when value needs attention (e.g., BG older than 9 min, no BG data)
+### Primary and secondary inputs
+- **Primary** = the number the screen is about. It stays an open `NumberInputRow`: carbs, insulin,
+  temp basal rate and duration, extended bolus insulin and duration, calibration BG, fill amount,
+  temp target and its duration, profile percentage and duration.
+- **Secondary** = everything else. It is folded (see below): wizard BG, correction, percentage and
+  carb time, carbs dialog duration and carb time, insulin dialog record-only time, profile timeshift,
+  care dialog duration, and care dialog BG for Question and Announcement (open for BG check).
+- Why: a second open field that looks like the primary one invites the primary's number into it.
+  In the wizard, grams were typed into the correction and bolused as units.
+- Settings-style editors (quick wizard editor, automation, scenes, pump options) are not dialogs in
+  this sense. Every field there is set on purpose, so they stay open.
+
+### Folded rows
+- **A number**: `ExpandableNumberInputRow` (core/ui/compose).
+  - Collapsed: `Label: value  (-) (+) (chevron)`. The +/- work without opening.
+  - Expanded: the full `NumberInputRow`. The chevron closes it again.
+  - `valueContent` when the row must say more than the number (BG age, meter type).
+- **A pick from a list** (wizard profile): `Label: value  (chevron)`, chevron in the same column as
+  on the number rows. The whole row is the `menuAnchor` of an `ExposedDropdownMenuBox`, so a tap
+  anywhere on it opens the list, as wide as the row. The chevron is a plain icon, not a button: a
+  second click target inside the anchor toggles the list twice. Do not put a dropdown field behind
+  a "Change" button: that is one tap more, and the button breaks the column of chevrons.
+- **A date/time only**: `EventTimeRow` (`Label: value [Change]`).
+- **Auto-expand** when the value needs attention (wizard: BG older than 9 min, no BG data). Only a
+  user's tap scrolls the row into view (`rememberBringIntoViewOnExpand`), not an auto-expand.
 - Text styles: label = `labelLarge` + `onSurfaceVariant`, value = `titleMedium` + `onSurface`
 - Use `rememberSaveable` for expanded state to survive rotation
 - This is different from the arrow expand/collapse pattern (used for "show more info" like calculation details)
 
-### CarbTimeRow (shared component in core/ui/compose)
-- Expand/collapse inline (not a popup dialog) — no local state, all changes go directly to parent
+### TimeOffsetRow (shared component in core/ui/compose)
+- A time as minutes from now, folded at "Now". Built on `ExpandableNumberInputRow`.
+- The caller gives the label: "Carb time" (wizard, carbs dialog) or "Time" (insulin record-only).
+- Alarm is optional: pass `onAlarmChange` for carb time, leave it null where there is no alarm.
 - Shows alarm bell icon when alarm is set and offset > 0
 - Alarm toggle disabled (grayed out) when offset <= 0
-- Supports `dateTimeContent` slot for date/time pickers (Carbs dialog only)
-- No clock icon — just text label
+- Supports `dateTimeContent` slot for date/time pickers (carbs and insulin dialogs)
+- No local state — all changes go directly to parent
 - Value format: "Now" when offset=0, or "17:55\n(+15 min)" with resolved time
 
 ### NumberInputRow Usage
@@ -54,17 +77,17 @@
 - Free text input accepted (no step rounding on typed values, only +/- buttons use step)
 
 ### Calculation Section (Wizard-specific)
-- Expandable with arrow icon (show/hide details pattern — different from "Change" pattern)
+- Expandable with arrow icon (show/hide details pattern — different from the folded rows above)
 - Result summary always visible in header row
 - Toggles (BG, TT, Trend, IOB, COB) always visible using MultiChoiceSegmentedButtonRow
 - Default M3 styling for toggle selection (no custom icon tints)
 - `checked` must account for `enabled` conditions (e.g., `checked = uiState.useTT && uiState.hasTempTarget`)
 
 ### Space Savings
-- Top-level `verticalArrangement = Arrangement.spacedBy(8.dp)` between cards
-- Bottom spacer: `8.dp`
+- Top-level `verticalArrangement = Arrangement.spacedBy(AapsSpacing.medium)` between cards
+- Bottom spacer: `AapsSpacing.medium`
 - No extra vertical padding in NumberInputRow
-- Card internal padding: `padding(horizontal = 16.dp, vertical = 8.dp)`
+- Card internal padding: `padding(horizontal = AapsSpacing.extraLarge, vertical = AapsSpacing.medium)`
 
 ### Dark Mode
 - `secondaryContainer` adjusted to `#635F6A` for better SegmentedButton contrast
@@ -72,31 +95,24 @@
 
 ### Related Items
 - Group related inputs in one item block (e.g., carbs + quick-add buttons, carb time + alarm)
-- Use `padding(top = 4.dp)` for sub-elements within an item (e.g., food selector below carbs)
+- Use `padding(top = AapsSpacing.small)` for sub-elements within an item (e.g., food selector below carbs)
 
-## Screens to Update
+## Screens that follow these rules
 
-| # | Screen | Status | Path |
-|---|---|---|---|
-| 1 | WizardDialogScreen | ✅ Done | `ui/.../wizardDialog/` |
-| 2 | TreatmentDialogScreen | ✅ Done | `ui/.../treatmentDialog/` |
-| 3 | TempBasalDialogScreen | ✅ Done | `ui/.../tempBasalDialog/` |
-| 4 | InsulinDialogScreen | ✅ Done | `ui/.../insulinDialog/` |
-| 5 | FillDialogScreen | ✅ Done | `ui/.../fillDialog/` |
-| 6 | ExtendedBolusDialogScreen | ✅ Done | `ui/.../extendedBolusDialog/` |
-| 7 | CareDialogScreen | ✅ Done | `ui/.../careDialog/` |
-| 8 | CarbsDialogScreen | ✅ Done | `ui/.../carbsDialog/` |
-| 9 | ProfileActivationScreen | ✅ Done | `ui/.../profileManagement/` |
-| 10 | ProfileHelperScreen | ✅ Done | `ui/.../profileHelper/` |
-| 11 | InsulinManagementScreen | ✅ Done | `ui/.../insulinManagement/` |
-| 12 | DanaUserOptionsScreen | ✅ Done | `pump/dana/common/.../compose/` |
-| 13 | CalibrationDialogScreen | ✅ New | `ui/.../calibrationDialog/` |
+All of them already do. Use them as examples, and keep them in line when you change the rules.
 
-## Review Findings (2026-03-28)
-
-### Fixed
-- Duplicate comment in NumberInputRow (line 255)
-- Dead `SectionHeader` functions removed from CarbsDialog and InsulinDialog
-- InsulinDialog confirmation + bolus timestamp: now uses `state.eventTime` instead of `now() + offset`
-- CalibrationDialog button: shows BG value + unit when valid
-- WizardDialog BG expand: starts collapsed, auto-expands via `LaunchedEffect(bgIsOld)` reactively
+| Screen | Path |
+|---|---|
+| WizardDialogScreen | `ui/.../wizardDialog/` |
+| TreatmentDialogScreen | `ui/.../treatmentDialog/` |
+| TempBasalDialogScreen | `ui/.../tempBasalDialog/` |
+| InsulinDialogScreen | `ui/.../insulinDialog/` |
+| FillDialogScreen | `ui/.../fillDialog/` |
+| ExtendedBolusDialogScreen | `ui/.../extendedBolusDialog/` |
+| CareDialogScreen | `ui/.../careDialog/` |
+| CarbsDialogScreen | `ui/.../carbsDialog/` |
+| ProfileActivationScreen | `ui/.../profileManagement/` |
+| ProfileHelperScreen | `ui/.../profileHelper/` |
+| InsulinManagementScreen | `ui/.../insulinManagement/` |
+| DanaUserOptionsScreen | `pump/dana/common/.../compose/` |
+| CalibrationDialogScreen | `ui/.../calibrationDialog/` |

@@ -1,9 +1,9 @@
 package app.aaps.pump.diaconn.packet
 
+import app.aaps.core.interfaces.di.MetroMemberInjector
 import app.aaps.pump.diaconn.DiaconnG8Pump
 import app.aaps.shared.tests.TestBaseWithProfile
 import com.google.common.truth.Truth.assertThat
-import app.aaps.core.interfaces.di.MetroMemberInjector
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
@@ -37,6 +37,21 @@ class TempBasalReportPacketTest : TestBaseWithProfile() {
         // Then
         assertThat(packet.failed).isFalse()
         assertThat(diaconnG8Pump.tbStatus).isEqualTo(1)
+    }
+
+    // A real G8 (fw 2.50), 1.8 s after the confirm of 1.15 U/h for 30 min. It took the status only, and kept the time and
+    // rate of the last inquiry: "running" with 50100.
+    @Test
+    fun theTimeAndRateOfARealReportAreRead() {
+        diaconnG8Pump.tbTime = 4
+        diaconnG8Pump.tbInjectRateRatio = 50100
+        val real = "ef ca 25 00 01 02 5b 04 ff ff ff ff ff ff ff ff ff ff ff bb".split(" ").map { it.toInt(16).toByte() }.toByteArray()
+
+        TempBasalReportPacket(packetInjector).handleMessage(real)
+
+        assertThat(diaconnG8Pump.tbStatus).isEqualTo(1)
+        assertThat(diaconnG8Pump.tbTime).isEqualTo(2)
+        assertThat(diaconnG8Pump.tbInjectRateRatio).isEqualTo(1115)
     }
 
     @Test

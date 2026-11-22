@@ -88,7 +88,7 @@
     <string name="add_short">PŘIDAT</string>
     <string name="temptargetcompared">Dočasný cíl %1$s</string>
     <string name="btdevicecompared">Připojení Bluetooth k zařízení %1$s %2$s</string>
-    <string name="btdevice">Připojení k zařízení Bluetooth </string>
+    <string name="btdevice">Připojení k zařízení Bluetooth</string>
     <string name="wifissidcompared">WiFi SSID %1$s %2$s</string>
     <string name="autosenscompared">Autosens %1$s %2$s %%</string>
     <string name="autosenslabel">Autosens %</string>
@@ -108,6 +108,8 @@
     <string name="triggerCannulaAgeDesc">Stáří kanyly %1$s %2$.1f h</string>
     <string name="triggerPodChangeLabel">Aktivace Podu</string>
     <string name="triggerPodChangeDesc">Pod aktivován</string>
+    <string name="triggerUnknownLabel">Neznámý spouštěč</string>
+    <string name="triggerUnknownDesc" comment="%1$s=stored trigger type name, not translated. Example: Unknown trigger TriggerFromTheFuture - never true">Neznámý spouštěč %1$s - nikdy neplatí</string>
     <string name="triggerInsulinAgeLabel">Stáří inzulínu</string>
     <string name="triggerInsulinAgeDesc">Stáří inzulínu %1$s %2$.1f h</string>
     <string name="triggerPumpBatteryAgeLabel">Stáří baterie v pumpě</string>
@@ -144,6 +146,7 @@
     <string name="triggerStepsCountLabel">Počet kroků</string>
     <string name="triggerStepsCountDesc">Počet kroků za %1$s minut %2$s %3$.0f</string>
     <string name="triggerStepsCountDropdownLabel">Délka měření</string>
+    <string name="automation_log_entry" comment="One line of the automation run log. %1$s=time, %2$s=a symbol for success or failure, %3$s=rule name (bold), %4$s=what the action did, %5$s=its result. Example: 21:15 ☺ Night low: Start temp target: 8.0mmol/L@60 min(Automation): OK">%1$s %2$s %3$s: %4$s: %5$s</string>
     <!--    SMB mode-->
     <string name="changeSmbState">Povolit/zakázat SMB</string>
     <string name="changeSmbTo">Změnit SMB na %1$s</string>

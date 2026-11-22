@@ -14,7 +14,7 @@
     <!-- Sick Day Vomiting: Profile 60%, Loop LGS, SMB off, Sickness CP — 8h -->
     <string name="scene_template_sick_day_vomiting">Liga — vėmimas</string>
     <string name="scene_wizard_sick_day_vomiting_desc">Sumažintas profilis su LGS – tai priešinga įprastai ligos dienos situacijai, kai organizmas prasčiau pasisavina maistą.</string>
-    <string name="scene_wizard_info_sick_day_vomiting">Jei dėl vėmimo nepavyksta išlaikyti maisto, įprastas ligos dienos principas didinti insulino kiekį gali būti pavojingas. Angliavandeniai tokiu atveju gali būti nepakankamai pasisavinami, todėl gliukozė gali ne kilti, o kristi. Sumažintas profilis (60 %) mažina insulino tiekimą, o LGS režimas suteikia papildomą apsaugą – gliukozei krentant insulino tiekimas sustabdomas. Išjungus SMB, neleidžiami papildomi mikroboliusai. Gliukozę tikrinkite kas 1–2 val., ketonus – kas 2–4 val. Kreipkitės medicininės pagalbos, jei vėmimas tęsiasi ilgiau nei kelias valandas arba ketonai padidėja virš 1,5 mmol/l.</string>
+    <string name="scene_wizard_info_sick_day_vomiting">Jei dėl vėmimo nepavyksta išlaikyti maisto, įprastas ligos dienos principas didinti insulino kiekį gali būti pavojingas. Angliavandeniai tokiu atveju gali būti nepakankamai pasisavinami, todėl gliukozė gali ne kilti, o kristi. Sumažintas profilis (60 %) mažina insulino tiekimą, o LGS režimas suteikia papildomą apsaugą – gliukozei krentant insulino tiekimas sustabdomas. Išjungus SMB, neleidžiami papildomi mikrobolusai. Gliukozę tikrinkite kas 1–2 val., ketonus – kas 2–4 val. Kreipkitės medicininės pagalbos, jei vėmimas tęsiasi ilgiau nei kelias valandas arba ketonai padidėja virš 1,5 mmol/l.</string>
     <!-- Sleep: no default actions — 8h -->
     <string name="scene_template_sleep">Miegas</string>
     <string name="scene_wizard_sleep_desc">Žemesnis gliukozės tikslas geresnei kontrolei naktį.</string>
@@ -38,7 +38,7 @@
     <!-- Bathing: Disconnected Pump — 1h (showering, swimming, baths, any water exposure) -->
     <string name="scene_template_bathing">Maudymasis</string>
     <string name="scene_wizard_bathing_desc">Atjungti pompą prausiantis duše, plaukiojant, maudantis vonioje ar užsiimant kita veikla vandenyje.</string>
-    <string name="scene_wizard_info_bathing">Atjungus pompą, insulino tiekimas visiškai sustoja – neleidžiama nei bazė, nei boliusai ar korekcijos. Algoritmas persijungia į atjungtos pompos režimą ir nebeatlieka korekcijų. Trumpam laikui, pavyzdžiui, prausiantis duše, maudantis ar plaukiojant, tai normalu. Scenarijui pasibaigus, pompa vėl prijungiama, o algoritmas automatiškai atnaujina darbą. Pompą laikykite atjungtą kuo trumpiau – negaunant bazinio insulino, gliukozė gali pradėti kilti jau po 1–2 val.</string>
+    <string name="scene_wizard_info_bathing">Atjungus pompą, insulino tiekimas visiškai sustoja – neleidžiama nei bazė, nei bolusai ar korekcijos. Algoritmas persijungia į atjungtos pompos režimą ir nebeatlieka korekcijų. Trumpam laikui, pavyzdžiui, prausiantis duše, maudantis ar plaukiojant, tai normalu. Scenarijui pasibaigus, pompa vėl prijungiama, o algoritmas automatiškai atnaujina darbą. Pompą laikykite atjungtą kuo trumpiau – negaunant bazinio insulino, gliukozė gali pradėti kilti jau po 1–2 val.</string>
     <!-- Luteal Phase: Profile 115%, Pre-period CP — 5 days -->
     <string name="scene_template_luteal_phase">Liuteininė fazė</string>
     <string name="scene_wizard_luteal_phase_desc">Padidintas profilis prieš mėnesines padidėjusiam atsparumui insulinui kompensuoti.</string>
@@ -55,7 +55,7 @@
     <string name="scene_template_blank">Tuščias</string>
     <string name="scene_wizard_blank_desc">Pradėti nuo pradžių be iš anksto pasirinktų veiksmų.</string>
     <!-- Scene wizard: action step education -->
-    <string name="scene_wizard_profile_info" formatted="false">Pakeitus profilį vienu metu pakeičiama bazė, jautrumo insulinui faktorius (JIF) ir insulino bei angliavandenių santykis (IA). Visą profilį galima proporcingai keisti procentais – pavyzdžiui, nustačius 110 %, bazė ir pagal profilį apskaičiuojamos insulino dozės padidėja 10 %. Jei tam tikroms situacijoms turite sukurtą atskirą profilį, galite tiesiog persijungti į jį.</string>
+    <string name="scene_wizard_profile_info" formatted="false">Profilio keitimas vienu metu pakeičia jūsų valandinę bazę, jautrumo insulinui faktorių (JIF) ir insulino ir angliavandenių santykį (IA). Visas reikšmes galite pakeisti procentais – pavyzdžiui, 110 % padidina bazinio insulino tiekimą, boluso skaičiavimus ir angliavandenių įsisavinimo greitį maždaug 10 %. Taip pat galite pereiti prie visai kito profilio, jei turite tokį, nustatytą ypatingoms situacijoms.</string>
     <string name="scene_wizard_tt_info">Laikinas glikemijos tikslas nurodo algoritmui tam tikrą laiką siekti kitokios gliukozės reikšmės. Nustačius aukštesnį tikslą, algoritmas gliukozės kilimą koreguoja švelniau ir skiria mažiau insulino, todėl sumažėja hipoglikemijos rizika fizinio aktyvumo metu. Nustačius žemesnį tikslą, algoritmas reaguoja anksčiau ir gali skirti daugiau insulino – tai naudinga ruošiantis valgyti. Pasirinkite vieną iš žemiau pateiktų ruošinių – tikslinė gliukozės reikšmė ir paskirtis juose jau nustatytos.</string>
     <string name="scene_wizard_smb_info">Supermikrobolusai (SMB) leidžia algoritmui iš anksto suleisti dalį insulino mažais bolusais, tuo pat metu laikinai sumažinant ar sustabdant bazinį insuliną. Taip dalis būsimo insulino tarsi „pasiskolinama“, kad reakcija būtų greitesnė. Išjungus SMB, algoritmas koreguoja tik bazinį insuliną. Reakcija tampa lėtesnė ir tolygesnė, todėl toks režimas dažnai tinkamesnis fizinio aktyvumo metu ar miegant.</string>
     <string name="scene_wizard_loop_mode_info">Veikimo režimas nustato, kiek savarankiškai gali veikti algoritmas. Uždaro ciklo režimu jis automatiškai koreguoja insulino tiekimą. LGS (Low Glucose Suspend) režimas insuliną tik sumažina arba sustabdo, kai gliukozė krenta link hipoglikemijos ribos – insulino tiekimo jis nedidina. Atviro ciklo režimu algoritmas pateikia rekomendacijas, tačiau kiekvieną jų turite patvirtinti.</string>
@@ -73,10 +73,8 @@
     <!-- Scene list: chain indicator -->
     <string name="scene_chain_indicator">→ %1$s</string>
     <string name="scene_chain_target_missing">Susietas scenarijus pašalintas</string>
-    <!-- Scene expiry: chain result notifications -->
-    <string name="scene_ended_format">Scenarijus „%1$s“ baigtas</string>
-    <string name="scene_chained_format">Scenarijai susieti: %1$s → %2$s</string>
-    <string name="scene_chain_ended_with_skip">%1$s baigtas — tolesnis scenarijus praleistas: %2$s</string>
+    <!-- Scene expiry: what the banner says, and the chain error notification -->
+    <string name="scene_chain_skipped_line" comment="Shown on the banner of a scene that has ended. %1$s=why the next scene did not start. Example: Follow-up did not start: target scene was deleted">Kitas scenarijus nepasileido: %1$s</string>
     <string name="scene_chain_skipped_deleted">tikslo scenarijus pašalintas</string>
     <string name="scene_chain_skipped_disabled">„%1$s“ išjungtas</string>
     <string name="scene_chain_error_summary">%1$s → %2$s: nepavyko %3$d iš %4$d veiksmų</string>

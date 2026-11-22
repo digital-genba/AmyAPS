@@ -1,5 +1,7 @@
 package app.aaps.di.metro
 
+import app.aaps.core.interfaces.di.FeatureMemberInjectors
+import app.aaps.implementation.alerts.EatReminderReceiver
 import app.aaps.implementation.androidNotification.AlarmMuteReceiver
 import app.aaps.implementation.receivers.BTReceiver
 import app.aaps.implementation.receivers.ChargingStateReceiver
@@ -10,7 +12,6 @@ import app.aaps.receivers.AutoStartReceiver
 import app.aaps.receivers.CarbSuggestionReceiver
 import app.aaps.receivers.DataReceiver
 import app.aaps.receivers.SmsReceiver
-import app.aaps.core.interfaces.di.FeatureMemberInjectors
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.BindingContainer
 import dev.zacsweers.metro.ClassKey
@@ -42,6 +43,13 @@ object AppReceiversBindings {
     @IntoMap
     @ClassKey(AlarmMuteReceiver::class)
     fun bindAlarmMuteReceiver(injector: MembersInjector<AlarmMuteReceiver>): MembersInjector<*> = injector
+
+    // The "time to eat" alarm and its notification buttons - same story as AlarmMuteReceiver above.
+    @Provides
+    @FeatureMemberInjectors
+    @IntoMap
+    @ClassKey(EatReminderReceiver::class)
+    fun bindEatReminderReceiver(injector: MembersInjector<EatReminderReceiver>): MembersInjector<*> = injector
 
     @Provides
     @FeatureMemberInjectors

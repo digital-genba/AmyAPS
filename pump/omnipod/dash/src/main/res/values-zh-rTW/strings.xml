@@ -16,33 +16,23 @@
     <string name="omnipod_dash_scan_failed">掃描失敗</string>
     <string name="omnipod_dash_generic_error">一般錯誤：%1$s</string>
     <string name="omnipod_dash_connection_lost">連線中斷</string>
-    <string name="omnipod_dash_failed_to_send">無法發送指令</string>
-    <string name="omnipod_dash_command_not_sent">指令未發送</string>
-    <string name="omnipod_dash_command_not_received_by_the_pod">幫浦未接收到指令</string>
-    <string name="omnipod_dash_unknown">指令狀態未知</string>
-    <string name="omnipod_common_history_tbr_value">%1$.2f U/h，%2$d 分鐘</string>
-    <string name="omnipod_common_history_bolus_value">%1$.2f U</string>
-    <string name="omnipod_common_history_bolus_value_labeled" comment="%1$s=already formatted bolus amount with unit (see omnipod_common_history_bolus_value), %2$s=bolus type label. Example: 0.05 U (Basal correction)">%1$s (%2$s)</string>
-    <string name="omnipod_common_bolus_type_smb">微量注射</string>
-    <string name="omnipod_common_bolus_type_basal_correction">基礎修正</string>
-    <string name="omnipod_common_bolus_type_priming">預充</string>
     <string name="omnipod_common_alert_delivery_suspended">胰島素輸送已暫停</string>
-    <string name="omnipod_common_history_total_delivered">總輸送量：%1$.2f U</string>
     <string name="omnipod_dash_bolus_already_in_progress">另一個注射正在進行中</string>
     <string name="omnipod_dash_not_enough_insulin">儲液槽中的胰島素不足</string>
     <string name="unconfirmed_command" comment="26 characters max for translation">指令未確認</string>
     <string name="requested_by_user" comment="26 characters max for translation">用戶請求</string>
-    <string name="suspend_delivery_is_unconfirmed">輸送暫停未確認！請手動從 Omnipod 頁面重新整理幫浦狀態，並視需要恢復輸送。</string>
+    <string name="suspend_delivery_is_unconfirmed">尚未確認是否已暫停注射！請在幫浦螢幕上手動重新整理 Pod 狀態，並視需要恢復注射。</string>
     <string name="insulin_delivery_suspended">胰島素輸送已暫停</string>
     <string name="timezone_on_pod_is_different_from_the_timezone">幫浦上的時區與手機上的時區不同。基礎率不正確。請切換設定檔以便修復</string>
     <string name="failed_to_set_the_new_basal_profile">設置新的基礎率設定檔失敗。輸送已暫停</string>
-    <string name="setting_basal_profile_might_have_failed">設置基礎率設定檔可能失敗。輸送可能已暫停！請手動從 Omnipod 頁面重新整理幫浦狀態，並視需要恢復輸送。</string>
+    <string name="setting_basal_profile_might_have_failed">設定基礎率設定檔可能失敗。注射可能已暫停！請在幫浦螢幕上手動重新整理 Pod 狀態，並視需要恢復注射。</string>
     <string name="bolus_delivery_status_uncertain">注射狀態不確定。請重新整理幫浦狀態，以確認狀態。</string>
+    <string name="smb_delivery_status_uncertain" comment="%1$s=insulin amount with unit. Example: 0.35 U">無法確認微量注射（%1$s）是否成功。請重新整理幫浦狀態，以確認此指令是否成功。</string>
     <string name="temp_basal_out_of_sync">臨時基礎率狀態不如預期！如果之前有運行臨時基礎率已被取消。請檢查已輸送的胰島素和幫浦歷史紀錄
 (請確認AAPS與幫浦在可連線的距離內)</string>
     <string name="checking_delivery_status">檢查輸送狀態</string>
-    <string name="setting_temp_basal_might_have_basal_failed">設置臨時基礎率可能失敗。如果之前有運行臨時基礎率已被取消。請手動從 Omnipod 頁面重新整理幫浦狀態。</string>
+    <string name="setting_temp_basal_might_have_basal_failed">設定臨時基礎率可能失敗。如果先前有臨時基礎率正在執行，該設定已取消。請在幫浦螢幕上手動重新整理 Pod 狀態。</string>
     <string name="cancel_temp_basal_result_is_uncertain">取消臨時基礎率的結果不確定</string>
     <string name="unconfirmed_resumedelivery_command_please_refresh_pod_status">恢復輸送指令未確認。請重新整理幫浦狀態</string>
-    <string name="cancelling_temp_basal_might_have_failed">取消臨時基礎率可能失敗。如果之前有運行臨時基礎率，可能已被取消。請手動從 Omnipod 頁面重新整理幫浦狀態。</string>
+    <string name="cancelling_temp_basal_might_have_failed">取消臨時基礎率可能失敗。如果先前有臨時基礎率正在執行，該設定可能已取消。請在幫浦螢幕上手動重新整理 Pod 狀態。</string>
 </resources>

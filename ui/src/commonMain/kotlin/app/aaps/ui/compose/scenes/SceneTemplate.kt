@@ -6,7 +6,6 @@ import app.aaps.core.data.model.TE
 import app.aaps.core.data.model.TT
 import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.ui.CoreUiStrings
-import app.aaps.ui.UiStrings
 
 /**
  * Pre-defined scene templates for quick creation.
@@ -68,7 +67,11 @@ enum class SceneTemplate(
         infoResId = CoreUiStrings.scene_wizard_info_sleep,
         icon = "sleep",
         defaultDurationMinutes = 480, // 8 hours
-        defaultActions = emptyList()
+        defaultActions = listOf(
+            // No built-in preset has a sleep reason, so this pre-selects the user's Custom preset if there is one;
+            // otherwise the user picks a preset in the temp target step.
+            SceneAction.TempTarget(reason = TT.Reason.CUSTOM, targetMgdl = 100.0)
+        )
     ),
 
     POST_EXERCISE_NIGHT(
